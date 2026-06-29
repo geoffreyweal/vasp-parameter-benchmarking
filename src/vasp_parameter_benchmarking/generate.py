@@ -1,14 +1,22 @@
 """Part 1: generate the VASP parameter-benchmarking directory tree.
 
-For every parameter combination this creates a directory, copies the VASP inputs
-*and the submit.sl unchanged*, then edits only the swept parameters: the relevant
-INCAR tags are set, and (if the KPOINTS grid is swept) a fresh KPOINTS file is
-written. No per-config manifest is written - the generated INCAR/KPOINTS in each
-directory *are* the record, and the report reads the values back out of them.
+Each parameter combination gets a plain **numbered** directory (``001``, ``002``,
+...). The number is just a label; the ``INCAR``/``KPOINTS`` inside *are* the
+definition of that system, and the report (and folder navigator) read the values
+back out of them - there is no per-config manifest.
 
-The effective sweep (mode + parameters) is written once to
+``setup`` is **additive and idempotent**: it works out the combinations the
+current sweep needs, then creates only the ones that do not already exist (matched
+by reading existing folders' INCAR/KPOINTS). Re-running after adding a parameter
+therefore reuses every completed run and only appends the genuinely new folders -
+existing folders are never renamed, touched or re-run.
+
+Each new directory gets the VASP inputs *and the submit.sl* copied unchanged; only
+the swept parameters are edited (INCAR tags set, KPOINTS grid written). The
+effective sweep (mode + parameters) is written to
 ``<root>/vasp_parameter_benchmarking_parameters.txt`` so the report knows which
-tags were swept, in what order, and what the baseline is.
+tags were swept, in what order, and what the baseline is; a ``folder_index.html``
+navigator is (re)written so you can look a combination up by folder number.
 
 Unlike vasp-core-benchmarking, the submit.sl here is never rewritten - the
 parallel layout and all SLURM directives are exactly what you provide.
@@ -20,6 +28,7 @@ import shutil
 from pathlib import Path
 
 from . import incar as incar_mod
+from . import index as index_mod
 from . import kpoints as kpoints_mod
 from .parameters import (
     INCAR,
@@ -27,13 +36,15 @@ from .parameters import (
     VALID_MODES,
     ParamSpec,
     build_configs,
-    config_name,
     merge_specs,
     parse_cli_incar,
     parse_cli_kpoints,
     parse_parameters_file,
     render_parameters_file,
 )
+
+# Width of the zero-padded folder numbers (001, 002, ...).
+NUMBER_WIDTH = 3
 
 # VASP inputs that must be present in the inputs directory. KPOINTS is required
 # only when the KPOINTS grid is being swept (otherwise it is copied if present).
@@ -171,9 +182,25 @@ def setup(
         render_parameters_file(specs, mode, kpoints_style)
     )
 
+    # Existing numbered folders and the values they already hold. Additive setup
+    # reuses any folder whose parameters match a needed combination and only
+    # creates the missing ones; existing folders are never renamed or touched.
+    existing = index_mod.config_dirs(root_dir)
+    existing_assignments = {d: index_mod.read_assignment(d, specs) for d in existing}
+    next_number = max((int(d.name) for d in existing), default=0) + 1
+
     created: list[Path] = []
+    reused = 0
     for assignment in configs:
-        run_dir = root_dir / config_name(specs, assignment)
+        if any(
+            index_mod.assignment_matches(assignment, actual, specs)
+            for actual in existing_assignments.values()
+        ):
+            reused += 1
+            continue
+
+        run_dir = root_dir / f"{next_number:0{NUMBER_WIDTH}d}"
+        next_number += 1
         run_dir.mkdir(parents=True, exist_ok=True)
 
         for src in input_items:
@@ -188,11 +215,20 @@ def setup(
         shutil.copy2(submit_path, run_dir / SUBMIT_NAME)
 
         _apply_parameters(run_dir, specs, assignment, kpoints_style)
+        # Record this new folder so later combinations in the same run can match it.
+        existing_assignments[run_dir] = index_mod.read_assignment(run_dir, specs)
         created.append(run_dir)
 
-    print(f"Created {len(created)} parameter configurations under {root_dir}/ (mode: {mode})")
+    # (Re)write the navigator so combinations can be looked up by folder number.
+    index_path = index_mod.write_index(root_dir, specs)
+
+    print(
+        f"{len(configs)} combination(s) in this sweep (mode: {mode}): "
+        f"created {len(created)} new folder(s), reused {reused} existing."
+    )
     print("Sweeping:")
     for s in specs:
         target = "KPOINTS grid" if s.target == KPOINTS else f"INCAR {s.key}"
         print(f"  - {target}: {', '.join(s.values)}")
+    print(f"Folder navigator: {index_path}")
     return created

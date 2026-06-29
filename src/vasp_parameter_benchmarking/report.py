@@ -30,8 +30,7 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from . import incar as incar_mod
-from . import kpoints as kpoints_mod
+from . import index as index_mod
 from . import sacct
 from .outcar import (
     final_energy,
@@ -41,7 +40,6 @@ from .outcar import (
     parse_loop_times,
 )
 from .parameters import (
-    INCAR,
     KPOINTS,
     ParamSpec,
     numeric_value,
@@ -51,10 +49,12 @@ from .parameters import (
 PARAMETERS_FILENAME = "vasp_parameter_benchmarking_parameters.txt"
 
 FONT_FAMILY = "Helvetica Neue, Helvetica, Arial, sans-serif"
-CONV_COLOR = "#2c7fb8"
-COST_COLOR = "#e6550d"
-# Common "good enough" convergence guide drawn on the convergence panel.
-CONV_GUIDE_MEV = 1.0
+# A qualitative palette for the per-series lines (one per combination of the
+# other parameters).
+PALETTE = [
+    "#2c7fb8", "#e6550d", "#2ca25f", "#756bb1", "#d6616b",
+    "#8c6d31", "#3182bd", "#e6ab02", "#66a61e", "#a6761d",
+]
 
 
 def load_specs(root_dir: Path, parameters_file: str | None = None) -> tuple[list[ParamSpec], dict]:
@@ -66,22 +66,6 @@ def load_specs(root_dir: Path, parameters_file: str | None = None) -> tuple[list
             "Expected the one written by 'setup' in the benchmark root, or pass --parameters."
         )
     return parse_parameters_file(path)
-
-
-def read_config_parameters(run_dir: Path, specs: list[ParamSpec]) -> dict[str, str | None]:
-    """Read each swept parameter's actual value from this config's input files.
-
-    The INCAR/KPOINTS in the directory are the record - this reads the swept
-    INCAR tags from its INCAR and the grid from its KPOINTS, so the report always
-    reflects what was actually run.
-    """
-    values: dict[str, str | None] = {}
-    for s in specs:
-        if s.target == INCAR:
-            values[s.key] = incar_mod.read_tag(run_dir / "INCAR", s.key)
-        elif s.target == KPOINTS:
-            values[s.key] = kpoints_mod.read_grid(run_dir / "KPOINTS")
-    return values
 
 
 def collect_run(
@@ -125,7 +109,7 @@ def collect_run(
 
     # Swept parameter values, read back from this config's own INCAR/KPOINTS.
     by_key = {s.key: s for s in specs}
-    for key, value in read_config_parameters(run_dir, specs).items():
+    for key, value in index_mod.read_assignment(run_dir, specs).items():
         row[f"param_{key}"] = value
         row[f"param_{key}__num"] = (
             numeric_value(by_key[key], value) if value is not None else None
@@ -145,122 +129,112 @@ def collect_run(
     return row
 
 
-def _spec_slice(
-    df: pd.DataFrame, spec: ParamSpec, baseline: dict, all_keys: list[str]
-) -> pd.DataFrame:
-    """Rows where ``spec`` varies and every other swept key sits at baseline."""
-    mask = pd.Series(True, index=df.index)
-    for key in all_keys:
-        if key == spec.key:
-            continue
-        col = f"param_{key}"
-        if col in df.columns:
-            mask &= df[col].astype(str) == str(baseline.get(key))
-    return df[mask].copy()
+def _series_groups(sub: pd.DataFrame, other_keys: list[str]):
+    """Yield ``(label, group_df)`` splitting ``sub`` by the other parameters' values.
+
+    With no other swept parameters there is a single group ("all configs");
+    otherwise each distinct combination of the other parameters is its own series
+    so nothing is hidden and overlapping points are separated by colour.
+    """
+    if not other_keys:
+        yield "all configs", sub
+        return
+    cols = [f"param_{k}" for k in other_keys]
+    for gkey, g in sub.groupby(cols, dropna=False, sort=True):
+        values = gkey if isinstance(gkey, tuple) else (gkey,)
+        label = ", ".join(f"{k}={v}" for k, v in zip(other_keys, values))
+        yield label, g
 
 
 def _build_figure(df: pd.DataFrame, specs: list[ParamSpec]):
-    """Build the convergence-vs-cost figure with a per-parameter dropdown."""
+    """Energy + cost vs each swept parameter, with a per-parameter dropdown.
+
+    For the selected parameter, every config is plotted: energy per atom (left)
+    and mean time per electronic step (right) against that parameter's value. The
+    remaining parameters split the points into coloured series, so all data is
+    shown without assuming any baseline.
+    """
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
-    baseline = {s.key: s.values[0] for s in specs}
     all_keys = [s.key for s in specs]
 
     fig = make_subplots(
-        rows=1,
-        cols=2,
-        subplot_titles=("Convergence", "Cost"),
+        rows=1, cols=2,
+        subplot_titles=("Energy per atom", "Cost per electronic step"),
         horizontal_spacing=0.12,
     )
 
-    # Two traces (convergence, cost) per spec; only the first spec visible initially.
-    trace_visible: list[bool] = []
-    axis_settings: list[dict] = []  # per-spec x-axis title + tick labels
+    spec_traces: list[list[int]] = []  # trace indices belonging to each spec
+    axis_settings: list[dict] = []     # per-spec x-axis title + tick labels
 
     for si, spec in enumerate(specs):
         key = spec.key
         is_kpoints = spec.target == KPOINTS
-        sub = _spec_slice(df, spec, baseline, all_keys)
-
-        numcol = f"param_{key}__num"
-        valcol = f"param_{key}"
+        numcol, valcol = f"param_{key}__num", f"param_{key}"
+        sub = df.copy()
         numeric = numcol in sub.columns and sub[numcol].notna().all() and not sub.empty
 
         if numeric:
-            sub = sub.sort_values(numcol)
-            x = sub[numcol].astype(float).tolist()
-            tickvals = x
-            ticktext = sub[valcol].astype(str).tolist()
-            # Reference = highest-fidelity value (largest numeric x).
-            ref_mask = sub[numcol] == sub[numcol].max()
+            sub["_x"] = sub[numcol].astype(float)
         else:
-            # Categorical: order by the spec's declared value order.
             order = {str(v): i for i, v in enumerate(spec.values)}
-            sub["_ord"] = sub[valcol].astype(str).map(order).fillna(len(order))
-            sub = sub.sort_values("_ord")
-            x = list(range(len(sub)))
-            tickvals = x
-            ticktext = sub[valcol].astype(str).tolist()
-            ref_mask = sub["_ord"] == sub["_ord"].max()
+            sub["_x"] = sub[valcol].astype(str).map(order).fillna(len(order))
 
-        # Convergence: |E - E_ref| per atom, in meV/atom.
-        epa = pd.to_numeric(sub["energy_per_atom_eV"], errors="coerce")
-        ref_epa = epa[ref_mask.values].iloc[0] if ref_mask.any() and not epa.empty else None
-        delta = (epa - ref_epa).abs() * 1000.0 if ref_epa is not None else epa * float("nan")
-
-        cost = pd.to_numeric(sub["loop_real_mean_s"], errors="coerce")
-
-        unit = "meV/atom"
+        ticks = sub[["_x", valcol]].drop_duplicates().sort_values("_x")
+        tickvals = ticks["_x"].tolist()
+        ticktext = ticks[valcol].astype(str).tolist()
         x_title = f"total k-points ({key} grid)" if is_kpoints else key
 
-        fig.add_trace(
-            go.Scatter(
-                x=x, y=delta.tolist(),
-                mode="markers+lines",
-                line=dict(color=CONV_COLOR, width=2.5),
-                marker=dict(size=9, color=CONV_COLOR, line=dict(width=1.5, color="white")),
-                text=ticktext, customdata=sub["config"],
-                hovertemplate=(
-                    f"{key} = %{{text}}<br>|&Delta;E| = %{{y:.4g}} {unit}"
-                    "<br>%{customdata}<extra></extra>"
+        other_keys = [k for k in all_keys if k != key]
+        start = len(fig.data)
+        for gi, (label, g) in enumerate(_series_groups(sub, other_keys)):
+            g = g.sort_values("_x")
+            color = PALETTE[gi % len(PALETTE)]
+            energy = pd.to_numeric(g["energy_per_atom_eV"], errors="coerce")
+            cost = pd.to_numeric(g["loop_real_mean_s"], errors="coerce")
+            common = dict(
+                x=g["_x"].tolist(), mode="markers+lines",
+                line=dict(color=color, width=2),
+                marker=dict(size=8, color=color, line=dict(width=1, color="white")),
+                text=g[valcol].astype(str).tolist(), customdata=g["config"],
+                legendgroup=label, visible=(si == 0),
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=energy.tolist(), name=label, showlegend=True,
+                    hovertemplate=(
+                        f"{key} = %{{text}}<br>energy/atom = %{{y:.5f}} eV"
+                        "<br>folder %{customdata}<extra>" + label + "</extra>"
+                    ),
+                    **common,
                 ),
-                name="convergence", showlegend=False, visible=(si == 0),
-            ),
-            row=1, col=1,
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=x, y=cost.tolist(),
-                mode="markers+lines",
-                line=dict(color=COST_COLOR, width=2.5),
-                marker=dict(size=9, color=COST_COLOR, line=dict(width=1.5, color="white")),
-                text=ticktext, customdata=sub["config"],
-                hovertemplate=(
-                    f"{key} = %{{text}}<br>time/step = %{{y:.4g}} s"
-                    "<br>%{customdata}<extra></extra>"
+                row=1, col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    y=cost.tolist(), name=label, showlegend=False,
+                    hovertemplate=(
+                        f"{key} = %{{text}}<br>time/step = %{{y:.4g}} s"
+                        "<br>folder %{customdata}<extra>" + label + "</extra>"
+                    ),
+                    **common,
                 ),
-                name="cost", showlegend=False, visible=(si == 0),
-            ),
-            row=1, col=2,
-        )
+                row=1, col=2,
+            )
+        spec_traces.append(list(range(start, len(fig.data))))
+        axis_settings.append(dict(title=x_title, tickvals=tickvals, ticktext=ticktext))
 
-        trace_visible.append(si == 0)
-        axis_settings.append(
-            dict(title=x_title, tickvals=tickvals, ticktext=ticktext)
-        )
-
-    # Dropdown: show one spec's pair of traces and relabel the shared x-axes.
+    # Dropdown: show the selected spec's traces and relabel the shared x-axes.
     buttons = []
     for si, spec in enumerate(specs):
-        visible = [False] * (2 * len(specs))
-        visible[2 * si] = True
-        visible[2 * si + 1] = True
+        visible = [False] * len(fig.data)
+        for idx in spec_traces[si]:
+            visible[idx] = True
         s = axis_settings[si]
         buttons.append(
             dict(
-                label=spec.key,
-                method="update",
+                label=spec.key, method="update",
                 args=[
                     {"visible": visible},
                     {
@@ -275,25 +249,14 @@ def _build_figure(df: pd.DataFrame, specs: list[ParamSpec]):
             )
         )
 
-    # Initial axis labels (first spec).
     first = axis_settings[0]
-    fig.update_xaxes(
-        title_text=first["title"], tickvals=first["tickvals"], ticktext=first["ticktext"],
-        row=1, col=1,
-    )
-    fig.update_xaxes(
-        title_text=first["title"], tickvals=first["tickvals"], ticktext=first["ticktext"],
-        row=1, col=2,
-    )
-    fig.update_yaxes(title_text="|&Delta;E| from best (meV/atom)", rangemode="tozero", row=1, col=1)
+    for col in (1, 2):
+        fig.update_xaxes(
+            title_text=first["title"], tickvals=first["tickvals"],
+            ticktext=first["ticktext"], row=1, col=col,
+        )
+    fig.update_yaxes(title_text="energy per atom (eV)", row=1, col=1)
     fig.update_yaxes(title_text="time / electronic step (s)", rangemode="tozero", row=1, col=2)
-
-    # 1 meV/atom convergence guide on the convergence panel.
-    fig.add_hline(
-        y=CONV_GUIDE_MEV, line=dict(dash="dot", color="rgba(120,120,120,0.8)", width=1.5),
-        annotation_text=f"{CONV_GUIDE_MEV:g} meV/atom", annotation_position="top left",
-        row=1, col=1,
-    )
 
     fig.update_layout(
         updatemenus=[
@@ -314,10 +277,15 @@ def _build_figure(df: pd.DataFrame, specs: list[ParamSpec]):
             )
         ],
         title=dict(
-            text="VASP parameter benchmarking &#8226; convergence vs cost",
+            text="VASP parameter benchmarking &#8226; energy &amp; cost",
             x=0.5, xanchor="center", font=dict(size=20, family=FONT_FAMILY, color="#222"),
         ),
-        template="plotly_white", height=560, margin=dict(t=130, b=60, l=70, r=40),
+        legend=dict(
+            orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5,
+            font=dict(size=11, family=FONT_FAMILY),
+            title=dict(text="other parameters: ", side="left"),
+        ),
+        template="plotly_white", height=600, margin=dict(t=130, b=120, l=70, r=40),
         font=dict(family=FONT_FAMILY, size=12, color="#333"),
         paper_bgcolor="white", plot_bgcolor="white", hovermode="closest",
         hoverlabel=dict(bgcolor="white", bordercolor="black", font=dict(family=FONT_FAMILY)),
@@ -328,11 +296,6 @@ def _build_figure(df: pd.DataFrame, specs: list[ParamSpec]):
 def write_html(df: pd.DataFrame, specs: list[ParamSpec], out_path: Path) -> None:
     """Write the report HTML (self-contained, plotly.js embedded)."""
     _build_figure(df, specs).write_html(str(out_path), include_plotlyjs=True)
-
-
-def _config_dirs(root_dir: Path) -> list[Path]:
-    """Config directories under ``root`` - the immediate subdirs holding an INCAR."""
-    return sorted(p for p in root_dir.iterdir() if p.is_dir() and (p / "INCAR").is_file())
 
 
 def report(
@@ -364,7 +327,7 @@ def report(
     skipped: list[str] = []
 
     print(f"Scanning {root_dir}/ for config directories...")
-    run_dirs = _config_dirs(root_dir)
+    run_dirs = index_mod.config_dirs(root_dir)
     print(
         f"Found {len(run_dirs)} config director{'y' if len(run_dirs) == 1 else 'ies'}. "
         f"Reading INCAR/KPOINTS + OUTCARs"
@@ -399,6 +362,10 @@ def report(
     html_path = out_dir / "vasp_parameter_benchmark_results.html"
     print(f"Building interactive plot -> {html_path} (embedding plotly.js)...")
     write_html(df, specs, html_path)
+
+    # Refresh the folder navigator so its run/pending status reflects this report.
+    index_path = index_mod.write_index(root_dir, specs)
+    print(f"Refreshed folder navigator -> {index_path}")
 
     if skipped:
         (out_dir / "skipped.txt").write_text("\n".join(skipped) + "\n")

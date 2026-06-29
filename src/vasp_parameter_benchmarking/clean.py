@@ -16,7 +16,7 @@ from tqdm import tqdm
 # Files kept in each benchmark directory; everything else is deleted.
 KEEP_NAMES = {
     "INCAR", "KPOINTS", "POTCAR", "POSCAR", "OUTCAR", "OSZICAR",
-    "vasp_parameter_benchmarking_parameters.txt",
+    "vasp_parameter_benchmarking_parameters.txt", "folder_index.html",
 }
 # Extensions kept regardless of name (scripts: submit.sl, *.sh helpers).
 KEEP_SUFFIXES = {".sh", ".sl"}

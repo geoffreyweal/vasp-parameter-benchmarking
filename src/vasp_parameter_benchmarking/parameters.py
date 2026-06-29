@@ -219,16 +219,6 @@ def build_configs(specs: list[ParamSpec], mode: str) -> list[dict[str, str]]:
     return unique
 
 
-def _sanitize(value: str) -> str:
-    """Make a parameter value safe for a directory-name token."""
-    return value.strip().replace(" ", "").replace("/", "-").replace(":", "-")
-
-
-def config_name(specs: list[ParamSpec], assignment: dict[str, str]) -> str:
-    """Build the directory name for an assignment, e.g. ``ENCUT-400_KPOINTS-4x4x4``."""
-    return "_".join(f"{s.key}-{_sanitize(assignment[s.key])}" for s in specs)
-
-
 def numeric_value(spec: ParamSpec, value: str) -> float | None:
     """A numeric x-coordinate for plotting, or None if the value isn't numeric.
 

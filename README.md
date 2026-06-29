@@ -88,10 +88,10 @@ vasp-parameter-benchmarking setup        # reads the parameters file
 vasp-parameter-benchmarking setup --incar "ENCUT=400,500,600" --mode oat
 ```
 
-> **List the value you trust most first.** The first value of each sweep is the
-> *baseline*: when the report plots one parameter, it holds the others at their
-> baseline. The per-parameter reference for convergence is instead the
-> highest-fidelity value (largest ENCUT, densest grid).
+> **List your existing/default value first.** In `oat` mode the first value of
+> each parameter is the centre the others are varied around, and listing the
+> value already in your base `INCAR`/`KPOINTS` first keeps later additive runs
+> lined up (see *Adding a parameter later*).
 >
 > **No separate manifest.** The generated `INCAR`/`KPOINTS` in each config dir
 > *are* the record — `report` reads each config's actual values straight from
@@ -108,13 +108,47 @@ vasp-parameter-benchmarking setup --incar "ENCUT=400,500,600" --mode oat
   same ENCUT × KPOINTS sweep becomes 1 + 4 + 3 = 8 jobs. Best for independent
   convergence tests.
 
-Each job lands in `VASP_Parameter_Benchmarking/<tokens>/`, named after the
-parameters that vary — e.g. `ENCUT-600_KPOINTS-4x4x4/`. The values themselves
-live in that directory's own `INCAR`/`KPOINTS`, which is what `report` reads.
+#### Numbered folders + the folder navigator
+
+Each job lands in a plain **numbered** directory — `VASP_Parameter_Benchmarking/001/`,
+`002/`, … The number is just a label; the `INCAR`/`KPOINTS` *inside* each folder
+define what it is, and that is what `report` reads. To find which folder holds a
+given variation, open the **folder navigator** that `setup` writes:
+
+```text
+VASP_Parameter_Benchmarking/folder_index.html
+```
+
+Open it in a browser and pick a value for each parameter from the dropdowns; it
+lists the matching folder number(s) and whether each has been run. Leave any
+parameter on **(any)** to not constrain it — e.g. ENCUT=600 with KPOINTS on
+**(any)** lists every folder at ENCUT=600. A full table of every folder and its
+values is shown below the selectors.
 
 > To benchmark `KSPACING`, sweep it as an INCAR tag
 > (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit the KPOINTS file** from
 > `VASP_Files/` — VASP uses `KSPACING` only when no `KPOINTS` file is present.
+
+#### Adding a parameter later (incremental studies)
+
+`setup` is **additive and idempotent**. To extend a study — add a parameter, or
+more values to an existing one — just edit the parameters file and run `setup`
+again. It works out the combinations the new sweep needs, **reuses every folder
+that already exists** (matched by the values in their `INCAR`/`KPOINTS`), and
+creates only the genuinely new ones with the next free numbers. Existing folders
+are never renamed, touched or re-run, so completed jobs are preserved.
+
+```text
+Study 1 (ENCUT × KPOINTS, oat) → 001 … 006
+add 'INCAR SIGMA = 0.05, 0.1, 0.2' to the parameters file, run setup again:
+  → reuses 001–006, creates only 007 (SIGMA=0.1) and 008 (SIGMA=0.2)
+```
+
+> For the reuse to line up, **list each parameter's existing/default value (the
+> one already in your base `INCAR`/`KPOINTS`) first** — your earlier runs hold the
+> new parameter at its base value, so they match the combinations that keep it
+> there and aren't duplicated. Then `submit` (or `submit --retry-failed`) only
+> runs the new folders.
 
 ##### Other options
 
@@ -170,19 +204,19 @@ completed run this collects:
 
 Outputs go to `report/` (change with `--out`): `results.csv` (all metrics),
 `skipped.txt` (unusable runs), and a self-contained
-`vasp_parameter_benchmark_results.html`.
+`vasp_parameter_benchmark_results.html`. It also refreshes the root
+`folder_index.html` so each folder's run/pending status is up to date.
 
-The HTML answers *how high do I need to push this parameter?* For each swept
-parameter — selectable from a dropdown, with the others held at baseline — it
-shows two panels:
+The HTML shows results against each swept parameter, selectable from a dropdown,
+in two panels:
 
-- **Convergence** — |E − E_ref| in **meV/atom** against the highest-fidelity
-  value of that parameter (largest ENCUT, densest grid). A dotted line marks a
-  1 meV/atom guide.
-- **Cost** — mean wall time per electronic step.
+- **Energy per atom** vs the parameter value.
+- **Cost** — mean wall time per electronic step vs the parameter value.
 
-Read the two together: pick the smallest parameter value whose convergence error
-is below your tolerance, and see what it costs.
+When more than one parameter is swept, the remaining parameters split the points
+into coloured series (shown in the legend), so every config is plotted without
+assuming any reference point. Read the two panels together: find where the energy
+stops changing and see what each value costs.
 
 ### Optional — `clean`: reclaim disk space
 
@@ -194,5 +228,5 @@ vasp-parameter-benchmarking clean --yes       # no prompt
 
 In every directory under `--root` this keeps `INCAR`, `KPOINTS`, `POTCAR`,
 `POSCAR`, `OUTCAR`, `OSZICAR`, scripts (`*.sh`, `*.sl`), slurm logs and the root
-parameters file; deletes the rest (WAVECAR, CHGCAR, vaspout.h5, vasprun.xml,
-ML_FF, …) and reports the space freed.
+parameters file + `folder_index.html`; deletes the rest (WAVECAR, CHGCAR,
+vaspout.h5, vasprun.xml, ML_FF, …) and reports the space freed.
