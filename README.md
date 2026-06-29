@@ -50,46 +50,56 @@ VASP_Files/
 Every file in `VASP_Files/` is copied into each benchmark directory **unchanged**,
 including your `submit.sl`. The tool then edits **only** the parameters you sweep:
 it sets the relevant `INCAR` tags and, if you sweep the k-point grid, writes a
-fresh `KPOINTS` file.
+fresh `KPOINTS` file. Your base `INCAR`/`KPOINTS` stay ordinary single-value
+files; the sweep lives in the parameters file.
 
 > `POTCAR` files are distributed under the VASP licence, so provide your own.
 
-#### Choosing what to sweep
+#### Choosing what to sweep — `vasp_parameter_benchmarking_parameters.txt`
 
-Specify the sweep with `--incar` (repeatable) and/or `--kpoints`:
-
-```bash
-vasp-parameter-benchmarking setup \
-  --incar "ENCUT=400,500,600,700,800" \
-  --kpoints "2x2x2,4x4x4,6x6x6,8x8x8" \
-  --mode oat
-```
-
-- `--incar "TAG=v1,v2,..."` — sweep an INCAR tag. Repeat the flag for more tags
-  (e.g. `--incar "ENCUT=..."` `--incar "SIGMA=0.05,0.1,0.2"`). Values are written
-  verbatim, so `LREAL=.FALSE.,Auto` works too.
-- `--kpoints "g1,g2,..."` — sweep the k-point grid, each grid written `n1xn2xn3`.
-  Grids become Gamma-centred `KPOINTS` files (`--kpoints-style monkhorst` to
-  switch). Pick the centring with `--kpoints-style`.
-
-> **List the value you trust most first.** The first value of each sweep is the
-> *baseline*: when the report plots one parameter, it holds the others at their
-> baseline. The per-parameter reference for convergence is instead the
-> highest-fidelity value (largest ENCUT, densest grid).
-
-Alternatively, put the sweep in a **parameters file** (default
-`vasp_parameter_benchmarking_parameters.txt`, or pass `--parameters`):
+Describe the sweep in a parameters file (default
+`vasp_parameter_benchmarking_parameters.txt`, or pass `--parameters`). One line
+per swept thing, plus optional run settings (like `mode`) at the top:
 
 ```text
-# one spec per line; '#' starts a comment
+# run settings
+mode = oat
+
+# what to sweep — one line each
 INCAR ENCUT = 400, 500, 600, 700, 800
 INCAR SIGMA = 0.05, 0.1, 0.2
 KPOINTS      = 2x2x2, 4x4x4, 6x6x6, 8x8x8
 ```
 
-CLI flags and the file are merged (CLI wins for a repeated tag).
+- `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Add a new parameter by
+  adding a line; nothing in the tool is hard-coded to specific tags. Values are
+  written verbatim, so `INCAR LREAL = .FALSE., Auto` works too.
+- `KPOINTS = g1, g2, ...` — sweep the k-point grid, each grid written `n1xn2xn3`.
+  Grids become Gamma-centred `KPOINTS` files (set `kpoints_style = monkhorst`, or
+  pass `--kpoints-style`, to switch).
+- `mode = grid | oat` — see below. A CLI `--mode` overrides it.
 
-#### `--mode`: how combinations are expanded
+You can also (or instead) pass sweeps on the command line — `--incar
+"ENCUT=400,500,600"` (repeatable) and `--kpoints "2x2x2,4x4x4"`. CLI flags and
+the file are merged (CLI wins for a repeated tag).
+
+```bash
+vasp-parameter-benchmarking setup        # reads the parameters file
+vasp-parameter-benchmarking setup --incar "ENCUT=400,500,600" --mode oat
+```
+
+> **List the value you trust most first.** The first value of each sweep is the
+> *baseline*: when the report plots one parameter, it holds the others at their
+> baseline. The per-parameter reference for convergence is instead the
+> highest-fidelity value (largest ENCUT, densest grid).
+>
+> **No separate manifest.** The generated `INCAR`/`KPOINTS` in each config dir
+> *are* the record — `report` reads each config's actual values straight from
+> those files. `setup` also drops the effective sweep (mode + parameters) into
+> `<root>/vasp_parameter_benchmarking_parameters.txt` so `report` knows which
+> tags were swept, in what order.
+
+#### `mode`: how combinations are expanded
 
 - `grid` *(default)* — the full **Cartesian product** of every value. With ENCUT
   (5) × KPOINTS (4) that is 20 jobs. Best when parameters interact.
@@ -98,12 +108,12 @@ CLI flags and the file are merged (CLI wins for a repeated tag).
   same ENCUT × KPOINTS sweep becomes 1 + 4 + 3 = 8 jobs. Best for independent
   convergence tests.
 
-Each job lands in `VASP_Parameter_Benchmarking/<tokens>/`, e.g.
-`ENCUT-600_KPOINTS-4x4x4/`, with a `parameters.json` recording its exact values.
-A `benchmark_manifest.json` at the root records the whole sweep.
+Each job lands in `VASP_Parameter_Benchmarking/<tokens>/`, named after the
+parameters that vary — e.g. `ENCUT-600_KPOINTS-4x4x4/`. The values themselves
+live in that directory's own `INCAR`/`KPOINTS`, which is what `report` reads.
 
 > To benchmark `KSPACING`, sweep it as an INCAR tag
-> (`--incar "KSPACING=0.1,0.2,0.3"`) and **omit the KPOINTS file** from
+> (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit the KPOINTS file** from
 > `VASP_Files/` — VASP uses `KSPACING` only when no `KPOINTS` file is present.
 
 ##### Other options
@@ -134,8 +144,8 @@ vasp-parameter-benchmarking submit --retry-failed            # reset + resubmit
 ```
 
 For each failed config this resets the directory to its inputs (`INCAR`,
-`KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`, `parameters.json`) and resubmits.
-Configs that already have a result are left untouched.
+`KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`) and resubmits. Configs that already
+have a result are left untouched.
 
 ### Part 3 — `report`: compare convergence vs cost
 
@@ -145,7 +155,9 @@ vasp-parameter-benchmarking report --no-sacct      # skip SLURM accounting queri
 vasp-parameter-benchmarking report --skip-steps 10 # drop the first 10 warm-up steps
 ```
 
-For each completed run this collects:
+The sweep (which tags, their order, the mode) is read from the parameters file
+`setup` wrote into `--root` — or pass your own with `--parameters`. For each
+completed run this collects:
 
 - **Final energy** — `energy(sigma->0)` from `OUTCAR` (falling back to `E0` from
   `OSZICAR`), plus energy per atom.
@@ -181,6 +193,6 @@ vasp-parameter-benchmarking clean --yes       # no prompt
 ```
 
 In every directory under `--root` this keeps `INCAR`, `KPOINTS`, `POTCAR`,
-`POSCAR`, `OUTCAR`, `OSZICAR`, `parameters.json`, scripts (`*.sh`, `*.sl`),
-slurm logs and the root `benchmark_manifest.json`; deletes the rest (WAVECAR,
-CHGCAR, vaspout.h5, vasprun.xml, ML_FF, …) and reports the space freed.
+`POSCAR`, `OUTCAR`, `OSZICAR`, scripts (`*.sh`, `*.sl`), slurm logs and the root
+parameters file; deletes the rest (WAVECAR, CHGCAR, vaspout.h5, vasprun.xml,
+ML_FF, …) and reports the space freed.

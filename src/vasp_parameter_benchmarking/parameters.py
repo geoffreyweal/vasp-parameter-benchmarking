@@ -12,6 +12,13 @@ values". Specs come from two places, which are merged (CLI wins on a clash):
         INCAR SIGMA = 0.05, 0.1, 0.2
         KPOINTS      = 2x2x2, 4x4x4, 6x6x6, 8x8x8
 
+A run-level ``mode`` setting may sit at the top of the parameters file::
+
+    mode = oat
+
+    INCAR ENCUT = 300, 400, 500
+    KPOINTS      = 2x2x2, 4x4x4
+
 The specs are then expanded into *configurations* - one per directory - in one
 of two modes:
 
@@ -34,6 +41,10 @@ from .kpoints import kpoint_count, parse_grid
 # Targets a spec can edit.
 INCAR = "INCAR"
 KPOINTS = "KPOINTS"
+
+# Run-level settings allowed at the top of a parameters file.
+VALID_MODES = ("grid", "oat")
+RECOGNISED_SETTINGS = ("mode", "kpoints_style")
 
 
 @dataclass
@@ -76,32 +87,37 @@ def parse_cli_kpoints(spec: str) -> ParamSpec:
     return ParamSpec(KPOINTS, KPOINTS, values)
 
 
-def parse_parameters_file(path: str | Path) -> list[ParamSpec]:
-    """Parse a parameters file into specs.
+def parse_parameters_file(path: str | Path) -> tuple[list[ParamSpec], dict[str, str]]:
+    """Parse a parameters file into ``(specs, settings)``.
 
     Each non-blank, non-comment line is one of::
 
-        INCAR <TAG> = v1, v2, ...
-        KPOINTS      = g1, g2, ...
+        mode = grid | oat          # run-level settings (mode, kpoints_style)
+        INCAR <TAG> = v1, v2, ...   # sweep an INCAR tag
+        KPOINTS      = g1, g2, ...  # sweep the KPOINTS grid
 
-    (``#`` starts a comment, either whole-line or trailing.)
+    (``#`` starts a comment, either whole-line or trailing.) Settings are
+    returned as a dict; spec lines as a list of :class:`ParamSpec`.
     """
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"parameters file not found: {p}")
 
     specs: list[ParamSpec] = []
+    settings: dict[str, str] = {}
     for lineno, raw in enumerate(p.read_text().splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
         if "=" not in line:
-            raise ValueError(f"{p}:{lineno}: expected '<TARGET> ... = values', got {raw!r}")
+            raise ValueError(
+                f"{p}:{lineno}: expected '<TARGET> ... = values' or 'setting = value', got {raw!r}"
+            )
 
         lhs, rhs = line.split("=", 1)
         tokens = lhs.split()
         if not tokens:
-            raise ValueError(f"{p}:{lineno}: missing target before '='")
+            raise ValueError(f"{p}:{lineno}: missing name before '='")
         target = tokens[0].upper()
 
         if target == KPOINTS:
@@ -114,11 +130,34 @@ def parse_parameters_file(path: str | Path) -> list[ParamSpec]:
                     f"{p}:{lineno}: expected 'INCAR <TAG> = ...', got {raw!r}"
                 )
             specs.append(parse_cli_incar(f"{tokens[1]}={rhs}"))
+        elif tokens[0].lower() in RECOGNISED_SETTINGS and len(tokens) == 1:
+            settings[tokens[0].lower()] = rhs.strip()
         else:
             raise ValueError(
-                f"{p}:{lineno}: unknown target {target!r}; use INCAR or KPOINTS"
+                f"{p}:{lineno}: unknown line {raw!r}; expected INCAR/KPOINTS or a "
+                f"setting ({', '.join(RECOGNISED_SETTINGS)})"
             )
-    return specs
+
+    if "mode" in settings and settings["mode"] not in VALID_MODES:
+        raise ValueError(
+            f"{p}: invalid mode {settings['mode']!r}; use one of {', '.join(VALID_MODES)}"
+        )
+    return specs, settings
+
+
+def render_parameters_file(
+    specs: list[ParamSpec], mode: str, kpoints_style: str
+) -> str:
+    """Render the effective sweep back into parameters-file text.
+
+    ``setup`` writes this into the benchmark root so ``report`` can recover the
+    sweep, mode and baseline without a separate JSON manifest.
+    """
+    lines = [f"mode = {mode}", f"kpoints_style = {kpoints_style}", ""]
+    for s in specs:
+        prefix = "KPOINTS" if s.target == KPOINTS else f"INCAR {s.key}"
+        lines.append(f"{prefix} = {', '.join(s.values)}")
+    return "\n".join(lines) + "\n"
 
 
 def merge_specs(file_specs: list[ParamSpec], cli_specs: list[ParamSpec]) -> list[ParamSpec]:
@@ -202,20 +241,3 @@ def numeric_value(spec: ParamSpec, value: str) -> float | None:
         return float(value)
     except ValueError:
         return None
-
-
-def config_record(specs: list[ParamSpec], assignment: dict[str, str], mode: str) -> dict:
-    """The JSON record written into each config dir (read back by the report)."""
-    parameters = {}
-    for s in specs:
-        value = assignment[s.key]
-        parameters[s.key] = {
-            "target": s.target,
-            "value": value,
-            "numeric": numeric_value(s, value),
-        }
-    return {
-        "name": config_name(specs, assignment),
-        "mode": mode,
-        "parameters": parameters,
-    }

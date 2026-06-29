@@ -16,7 +16,7 @@ from tqdm import tqdm
 # Files kept in each benchmark directory; everything else is deleted.
 KEEP_NAMES = {
     "INCAR", "KPOINTS", "POTCAR", "POSCAR", "OUTCAR", "OSZICAR",
-    "parameters.json", "benchmark_manifest.json",
+    "vasp_parameter_benchmarking_parameters.txt",
 }
 # Extensions kept regardless of name (scripts: submit.sl, *.sh helpers).
 KEEP_SUFFIXES = {".sh", ".sl"}
@@ -72,7 +72,7 @@ def clean(
     print(f"Found {len(files)} files to delete under {root}/ ({human_size(total)}).")
     print(
         "Keeping per directory: INCAR, KPOINTS, POTCAR, POSCAR, OUTCAR, OSZICAR, "
-        "parameters.json, *.sh, *.sl, slurm-*.out/.err"
+        "*.sh, *.sl, slurm-*.out/.err"
     )
 
     if dry_run:

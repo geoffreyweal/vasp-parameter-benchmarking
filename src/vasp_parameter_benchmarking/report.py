@@ -24,13 +24,14 @@ convergence guide.
 
 from __future__ import annotations
 
-import json
 import statistics
 from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
 
+from . import incar as incar_mod
+from . import kpoints as kpoints_mod
 from . import sacct
 from .outcar import (
     final_energy,
@@ -39,6 +40,15 @@ from .outcar import (
     oszicar_final_e0,
     parse_loop_times,
 )
+from .parameters import (
+    INCAR,
+    KPOINTS,
+    ParamSpec,
+    numeric_value,
+    parse_parameters_file,
+)
+
+PARAMETERS_FILENAME = "vasp_parameter_benchmarking_parameters.txt"
 
 FONT_FAMILY = "Helvetica Neue, Helvetica, Arial, sans-serif"
 CONV_COLOR = "#2c7fb8"
@@ -47,15 +57,36 @@ COST_COLOR = "#e6550d"
 CONV_GUIDE_MEV = 1.0
 
 
-def load_manifest(root_dir: Path) -> dict | None:
-    """Load ``benchmark_manifest.json`` from the root, or None if absent."""
-    p = root_dir / "benchmark_manifest.json"
-    if not p.is_file():
-        return None
-    return json.loads(p.read_text())
+def load_specs(root_dir: Path, parameters_file: str | None = None) -> tuple[list[ParamSpec], dict]:
+    """Load the swept specs + settings written by ``setup`` (or ``--parameters``)."""
+    path = Path(parameters_file) if parameters_file else root_dir / PARAMETERS_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"parameters file not found: {path}\n"
+            "Expected the one written by 'setup' in the benchmark root, or pass --parameters."
+        )
+    return parse_parameters_file(path)
 
 
-def collect_run(run_dir: Path, use_sacct: bool, skip_steps: int = 5) -> dict | None:
+def read_config_parameters(run_dir: Path, specs: list[ParamSpec]) -> dict[str, str | None]:
+    """Read each swept parameter's actual value from this config's input files.
+
+    The INCAR/KPOINTS in the directory are the record - this reads the swept
+    INCAR tags from its INCAR and the grid from its KPOINTS, so the report always
+    reflects what was actually run.
+    """
+    values: dict[str, str | None] = {}
+    for s in specs:
+        if s.target == INCAR:
+            values[s.key] = incar_mod.read_tag(run_dir / "INCAR", s.key)
+        elif s.target == KPOINTS:
+            values[s.key] = kpoints_mod.read_grid(run_dir / "KPOINTS")
+    return values
+
+
+def collect_run(
+    run_dir: Path, specs: list[ParamSpec], use_sacct: bool, skip_steps: int = 5
+) -> dict | None:
     """Build a result row for one config directory, or None if it is unusable.
 
     A run is usable if its OUTCAR yields a final energy. The first ``skip_steps``
@@ -92,13 +123,13 @@ def collect_run(run_dir: Path, use_sacct: bool, skip_steps: int = 5) -> dict | N
         "job_id": None,
     }
 
-    # Swept parameter values for this config.
-    params_path = run_dir / "parameters.json"
-    if params_path.is_file():
-        record = json.loads(params_path.read_text())
-        for key, info in record.get("parameters", {}).items():
-            row[f"param_{key}"] = info.get("value")
-            row[f"param_{key}__num"] = info.get("numeric")
+    # Swept parameter values, read back from this config's own INCAR/KPOINTS.
+    by_key = {s.key: s for s in specs}
+    for key, value in read_config_parameters(run_dir, specs).items():
+        row[f"param_{key}"] = value
+        row[f"param_{key}__num"] = (
+            numeric_value(by_key[key], value) if value is not None else None
+        )
 
     if use_sacct:
         row["job_id"] = sacct.find_job_id(run_dir)
@@ -114,11 +145,13 @@ def collect_run(run_dir: Path, use_sacct: bool, skip_steps: int = 5) -> dict | N
     return row
 
 
-def _spec_slice(df: pd.DataFrame, spec: dict, baseline: dict, all_keys: list[str]) -> pd.DataFrame:
+def _spec_slice(
+    df: pd.DataFrame, spec: ParamSpec, baseline: dict, all_keys: list[str]
+) -> pd.DataFrame:
     """Rows where ``spec`` varies and every other swept key sits at baseline."""
     mask = pd.Series(True, index=df.index)
     for key in all_keys:
-        if key == spec["key"]:
+        if key == spec.key:
             continue
         col = f"param_{key}"
         if col in df.columns:
@@ -126,14 +159,13 @@ def _spec_slice(df: pd.DataFrame, spec: dict, baseline: dict, all_keys: list[str
     return df[mask].copy()
 
 
-def _build_figure(df: pd.DataFrame, manifest: dict):
+def _build_figure(df: pd.DataFrame, specs: list[ParamSpec]):
     """Build the convergence-vs-cost figure with a per-parameter dropdown."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
-    specs = manifest["specs"]
-    baseline = manifest.get("baseline", {})
-    all_keys = [s["key"] for s in specs]
+    baseline = {s.key: s.values[0] for s in specs}
+    all_keys = [s.key for s in specs]
 
     fig = make_subplots(
         rows=1,
@@ -147,8 +179,8 @@ def _build_figure(df: pd.DataFrame, manifest: dict):
     axis_settings: list[dict] = []  # per-spec x-axis title + tick labels
 
     for si, spec in enumerate(specs):
-        key = spec["key"]
-        is_kpoints = spec["target"] == "KPOINTS"
+        key = spec.key
+        is_kpoints = spec.target == KPOINTS
         sub = _spec_slice(df, spec, baseline, all_keys)
 
         numcol = f"param_{key}__num"
@@ -164,7 +196,7 @@ def _build_figure(df: pd.DataFrame, manifest: dict):
             ref_mask = sub[numcol] == sub[numcol].max()
         else:
             # Categorical: order by the spec's declared value order.
-            order = {str(v): i for i, v in enumerate(spec["values"])}
+            order = {str(v): i for i, v in enumerate(spec.values)}
             sub["_ord"] = sub[valcol].astype(str).map(order).fillna(len(order))
             sub = sub.sort_values("_ord")
             x = list(range(len(sub)))
@@ -227,7 +259,7 @@ def _build_figure(df: pd.DataFrame, manifest: dict):
         s = axis_settings[si]
         buttons.append(
             dict(
-                label=spec["key"],
+                label=spec.key,
                 method="update",
                 args=[
                     {"visible": visible},
@@ -293,9 +325,14 @@ def _build_figure(df: pd.DataFrame, manifest: dict):
     return fig
 
 
-def write_html(df: pd.DataFrame, manifest: dict, out_path: Path) -> None:
+def write_html(df: pd.DataFrame, specs: list[ParamSpec], out_path: Path) -> None:
     """Write the report HTML (self-contained, plotly.js embedded)."""
-    _build_figure(df, manifest).write_html(str(out_path), include_plotlyjs=True)
+    _build_figure(df, specs).write_html(str(out_path), include_plotlyjs=True)
+
+
+def _config_dirs(root_dir: Path) -> list[Path]:
+    """Config directories under ``root`` - the immediate subdirs holding an INCAR."""
+    return sorted(p for p in root_dir.iterdir() if p.is_dir() and (p / "INCAR").is_file())
 
 
 def report(
@@ -303,11 +340,15 @@ def report(
     out: str = "report",
     no_sacct: bool = False,
     skip_steps: int = 5,
+    parameters_file: str | None = None,
 ) -> pd.DataFrame:
     """Run the full report pipeline. Returns the results DataFrame.
 
     ``skip_steps`` is the number of leading (warm-up) electronic steps dropped
-    from each run's timing average.
+    from each run's timing average. The sweep (which tags, their order, the mode)
+    is read from the parameters file ``setup`` wrote into ``root`` (override with
+    ``parameters_file``); each config's actual values are read from its own
+    INCAR/KPOINTS.
     """
     if skip_steps < 0:
         raise ValueError(f"--skip-steps must be >= 0, got {skip_steps}")
@@ -316,21 +357,17 @@ def report(
     if not root_dir.is_dir():
         raise FileNotFoundError(f"benchmark root not found: {root_dir}")
 
-    manifest = load_manifest(root_dir)
-    if manifest is None:
-        raise FileNotFoundError(
-            f"no benchmark_manifest.json under {root_dir}/ - was this created by 'setup'?"
-        )
+    specs, _settings = load_specs(root_dir, parameters_file)
 
     use_sacct = not no_sacct
     rows: list[dict] = []
     skipped: list[str] = []
 
-    print(f"Scanning {root_dir}/ for runs (parameters.json files)...")
-    run_dirs = sorted({p.parent for p in root_dir.rglob("parameters.json")})
+    print(f"Scanning {root_dir}/ for config directories...")
+    run_dirs = _config_dirs(root_dir)
     print(
         f"Found {len(run_dirs)} config director{'y' if len(run_dirs) == 1 else 'ies'}. "
-        f"Reading OUTCARs"
+        f"Reading INCAR/KPOINTS + OUTCARs"
         + (" and querying sacct" if use_sacct else " (sacct disabled)")
         + f" (dropping the first {skip_steps} electronic step(s) for timing)..."
     )
@@ -338,7 +375,7 @@ def report(
     progress = tqdm(run_dirs, desc="Collecting", unit="run")
     for run_dir in progress:
         progress.set_postfix_str(run_dir.name)
-        row = collect_run(run_dir, use_sacct, skip_steps=skip_steps)
+        row = collect_run(run_dir, specs, use_sacct, skip_steps=skip_steps)
         if row is None:
             skipped.append(str(run_dir))
         else:
@@ -361,7 +398,7 @@ def report(
 
     html_path = out_dir / "vasp_parameter_benchmark_results.html"
     print(f"Building interactive plot -> {html_path} (embedding plotly.js)...")
-    write_html(df, manifest, html_path)
+    write_html(df, specs, html_path)
 
     if skipped:
         (out_dir / "skipped.txt").write_text("\n".join(skipped) + "\n")

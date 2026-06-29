@@ -19,8 +19,8 @@ PAUSE_EVERY = 10
 PAUSE_SECONDS = 2
 
 # Files kept when resetting a failed run before resubmitting it. These are the
-# per-config inputs (already edited by setup) plus the bookkeeping files.
-RESET_KEEP = {"INCAR", "KPOINTS", "POTCAR", "POSCAR", "submit.sl", "parameters.json"}
+# per-config inputs, already edited by setup (the INCAR/KPOINTS are the record).
+RESET_KEEP = {"INCAR", "KPOINTS", "POTCAR", "POSCAR", "submit.sl"}
 
 
 def has_result(run_dir: Path) -> bool:

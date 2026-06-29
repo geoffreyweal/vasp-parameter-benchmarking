@@ -51,15 +51,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--mode",
         choices=["grid", "oat"],
-        default="grid",
+        default=None,
         help="grid = every combination of values (Cartesian product); "
-        "oat = one-at-a-time from a baseline (the first value of each). Default: grid.",
+        "oat = one-at-a-time from a baseline (the first value of each). "
+        "Overrides 'mode' in the parameters file; defaults to grid.",
     )
     p_setup.add_argument(
         "--kpoints-style",
         choices=[GAMMA, MONKHORST],
-        default=GAMMA,
-        help="Centring for generated KPOINTS grids (default: gamma).",
+        default=None,
+        help="Centring for generated KPOINTS grids. Overrides the parameters "
+        "file; defaults to gamma.",
     )
     p_setup.add_argument("--vasp-files", default="VASP_Files", help="Directory of VASP inputs.")
     p_setup.add_argument(
@@ -91,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--root", default="VASP_Parameter_Benchmarking", help="Benchmark root directory."
     )
     p_report.add_argument("--out", default="report", help="Report output directory.")
+    p_report.add_argument(
+        "--parameters",
+        help="Parameters file describing the sweep (default: the one 'setup' "
+        "wrote into the benchmark root).",
+    )
     p_report.add_argument("--no-sacct", action="store_true", help="Skip sacct utilisation queries.")
     p_report.add_argument(
         "--skip-steps",
@@ -148,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 out=args.out,
                 no_sacct=args.no_sacct,
                 skip_steps=args.skip_steps,
+                parameters_file=args.parameters,
             )
         elif args.command == "clean":
             from .clean import clean

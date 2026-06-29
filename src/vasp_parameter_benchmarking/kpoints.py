@@ -17,6 +17,7 @@ others.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 _GRID_RE = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 
@@ -42,6 +43,27 @@ def kpoint_count(grid: str) -> int:
     """Total number of mesh points in ``grid`` (n1 * n2 * n3)."""
     n1, n2, n3 = parse_grid(grid)
     return n1 * n2 * n3
+
+
+def read_grid(path: str | Path) -> str | None:
+    """Read the mesh from an automatic-mesh KPOINTS file as ``"n1xn2xn3"``.
+
+    Used by the report to read back the grid each config was run with. The file
+    layout is comment / 0 / centring / ``n1 n2 n3`` / shift, so the mesh is the
+    fourth line. Returns None if it cannot be parsed (e.g. a line-mode KPOINTS).
+    """
+    p = Path(path)
+    if not p.is_file():
+        return None
+    lines = p.read_text(errors="replace").splitlines()
+    if len(lines) < 4:
+        return None
+    tokens = lines[3].split()
+    try:
+        n1, n2, n3 = (int(tokens[0]), int(tokens[1]), int(tokens[2]))
+    except (ValueError, IndexError):
+        return None
+    return f"{n1}x{n2}x{n3}"
 
 
 def render_kpoints(grid: str, style: str = GAMMA) -> str:

@@ -47,6 +47,30 @@ def set_tag(text: str, key: str, value: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def get_tag(text: str, key: str) -> str | None:
+    """Return the value INCAR tag ``key`` is set to, or None if absent.
+
+    Used by the report to read back what each generated config was actually run
+    with - the INCAR file is the record, so there is no separate manifest.
+    """
+    key_u = key.upper()
+    for line in text.splitlines():
+        if ";" in line:
+            continue
+        m = _ASSIGN_RE.match(line)
+        if m and m.group("tag").upper() == key_u:
+            return m.group("value").strip()
+    return None
+
+
+def read_tag(path: str | Path, key: str) -> str | None:
+    """Read INCAR tag ``key`` from the file at ``path`` (None if missing)."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    return get_tag(p.read_text(errors="replace"), key)
+
+
 def set_tags(text: str, assignments: dict[str, str]) -> str:
     """Apply :func:`set_tag` for every ``key -> value`` in ``assignments``."""
     for key, value in assignments.items():

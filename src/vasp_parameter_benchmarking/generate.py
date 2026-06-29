@@ -3,8 +3,12 @@
 For every parameter combination this creates a directory, copies the VASP inputs
 *and the submit.sl unchanged*, then edits only the swept parameters: the relevant
 INCAR tags are set, and (if the KPOINTS grid is swept) a fresh KPOINTS file is
-written. A ``parameters.json`` recording the exact values is dropped in each
-directory for the report to read back.
+written. No per-config manifest is written - the generated INCAR/KPOINTS in each
+directory *are* the record, and the report reads the values back out of them.
+
+The effective sweep (mode + parameters) is written once to
+``<root>/vasp_parameter_benchmarking_parameters.txt`` so the report knows which
+tags were swept, in what order, and what the baseline is.
 
 Unlike vasp-core-benchmarking, the submit.sl here is never rewritten - the
 parallel layout and all SLURM directives are exactly what you provide.
@@ -12,7 +16,6 @@ parallel layout and all SLURM directives are exactly what you provide.
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
@@ -21,21 +24,22 @@ from . import kpoints as kpoints_mod
 from .parameters import (
     INCAR,
     KPOINTS,
+    VALID_MODES,
     ParamSpec,
     build_configs,
     config_name,
-    config_record,
     merge_specs,
     parse_cli_incar,
     parse_cli_kpoints,
     parse_parameters_file,
+    render_parameters_file,
 )
 
 # VASP inputs that must be present in the inputs directory. KPOINTS is required
 # only when the KPOINTS grid is being swept (otherwise it is copied if present).
 REQUIRED_INPUTS = ["INCAR", "POSCAR", "POTCAR"]
 
-DEFAULT_PARAMETERS_FILE = "vasp_parameter_benchmarking_parameters.txt"
+PARAMETERS_FILENAME = "vasp_parameter_benchmarking_parameters.txt"
 SUBMIT_NAME = "submit.sl"
 
 
@@ -43,18 +47,20 @@ def resolve_specs(
     incar_flags: list[str] | None,
     kpoints_flag: str | None,
     parameters_file: str | None,
-) -> list[ParamSpec]:
-    """Build the merged list of parameter specs from CLI flags + file.
+) -> tuple[list[ParamSpec], dict[str, str]]:
+    """Build the merged specs and settings from CLI flags + parameters file.
 
     The file is read from ``parameters_file`` if given, else from the default
     name if it happens to exist; a missing default is fine as long as CLI flags
-    supply the sweep.
+    supply the sweep. Returns ``(specs, file_settings)`` - ``file_settings`` may
+    carry ``mode``/``kpoints_style`` read from the file.
     """
     file_specs: list[ParamSpec] = []
+    settings: dict[str, str] = {}
     if parameters_file:
-        file_specs = parse_parameters_file(parameters_file)
-    elif Path(DEFAULT_PARAMETERS_FILE).is_file():
-        file_specs = parse_parameters_file(DEFAULT_PARAMETERS_FILE)
+        file_specs, settings = parse_parameters_file(parameters_file)
+    elif Path(PARAMETERS_FILENAME).is_file():
+        file_specs, settings = parse_parameters_file(PARAMETERS_FILENAME)
 
     cli_specs: list[ParamSpec] = []
     for flag in incar_flags or []:
@@ -62,7 +68,7 @@ def resolve_specs(
     if kpoints_flag:
         cli_specs.append(parse_cli_kpoints(kpoints_flag))
 
-    return merge_specs(file_specs, cli_specs)
+    return merge_specs(file_specs, cli_specs), settings
 
 
 def _apply_parameters(
@@ -89,8 +95,8 @@ def setup(
     incar_flags: list[str] | None = None,
     kpoints_flag: str | None = None,
     parameters_file: str | None = None,
-    mode: str = "grid",
-    kpoints_style: str = kpoints_mod.GAMMA,
+    mode: str | None = None,
+    kpoints_style: str | None = None,
     vasp_files: str = "VASP_Files",
     submit: str | None = None,
     root: str = "VASP_Parameter_Benchmarking",
@@ -101,11 +107,25 @@ def setup(
     then the swept INCAR tags are set and, if swept, the KPOINTS grid is written.
     The submit script (``--submit``, default ``<vasp_files>/submit.sl``) is copied
     in as ``submit.sl`` unchanged.
+
+    ``mode``/``kpoints_style`` given here (from the CLI) win over the parameters
+    file; if neither sets them they default to ``grid`` / ``gamma``.
     """
-    specs = resolve_specs(incar_flags, kpoints_flag, parameters_file)
+    specs, file_settings = resolve_specs(incar_flags, kpoints_flag, parameters_file)
     if not specs:
         raise ValueError(
-            "no parameters to sweep; pass --incar/--kpoints or a --parameters file"
+            "no parameters to sweep; add INCAR/KPOINTS lines to the parameters "
+            "file or pass --incar/--kpoints"
+        )
+
+    # Precedence: CLI argument > parameters-file setting > built-in default.
+    mode = mode or file_settings.get("mode") or "grid"
+    if mode not in VALID_MODES:
+        raise ValueError(f"invalid mode {mode!r}; use one of {', '.join(VALID_MODES)}")
+    kpoints_style = kpoints_style or file_settings.get("kpoints_style") or kpoints_mod.GAMMA
+    if kpoints_style not in (kpoints_mod.GAMMA, kpoints_mod.MONKHORST):
+        raise ValueError(
+            f"invalid kpoints_style {kpoints_style!r}; use 'gamma' or 'monkhorst'"
         )
 
     vasp_files_dir = Path(vasp_files)
@@ -143,17 +163,13 @@ def setup(
     root_dir = Path(root)
     root_dir.mkdir(parents=True, exist_ok=True)
 
-    # A top-level manifest records the sweep so the report knows the spec order,
-    # targets, values and baseline without re-deriving them from directory names.
-    manifest = {
-        "mode": mode,
-        "kpoints_style": kpoints_style,
-        "specs": [
-            {"target": s.target, "key": s.key, "values": list(s.values)} for s in specs
-        ],
-        "baseline": {s.key: s.values[0] for s in specs},
-    }
-    (root_dir / "benchmark_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    # Record the effective sweep (mode + parameters) in the user's own
+    # parameters-file format, not JSON. The report reads this to learn which
+    # tags were swept, their order (-> baseline) and the mode; the actual
+    # per-config values are read back from each directory's INCAR/KPOINTS.
+    (root_dir / PARAMETERS_FILENAME).write_text(
+        render_parameters_file(specs, mode, kpoints_style)
+    )
 
     created: list[Path] = []
     for assignment in configs:
@@ -172,10 +188,6 @@ def setup(
         shutil.copy2(submit_path, run_dir / SUBMIT_NAME)
 
         _apply_parameters(run_dir, specs, assignment, kpoints_style)
-
-        (run_dir / "parameters.json").write_text(
-            json.dumps(config_record(specs, assignment, mode), indent=2) + "\n"
-        )
         created.append(run_dir)
 
     print(f"Created {len(created)} parameter configurations under {root_dir}/ (mode: {mode})")
