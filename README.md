@@ -63,7 +63,7 @@ per swept thing, plus optional run settings (like `mode`) at the top:
 
 ```text
 # run settings
-mode = oat
+mode = grid
 
 # what to sweep — one line each
 INCAR ENCUT = 400, 500, 600, 700, 800
