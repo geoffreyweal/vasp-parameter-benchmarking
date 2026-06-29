@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vasp-parameter-benchmarking"
+version = "0.1.0"
+description = "Sweep VASP INCAR/KPOINTS parameters, submit the jobs and compare convergence vs cost"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Geoffrey Weal", email = "geoffrey.weal@reannz.co.nz" }]
+keywords = ["vasp", "slurm", "hpc", "benchmarking", "convergence", "chemistry", "dft"]
+dependencies = [
+    "numpy",
+    "pandas",
+    "plotly",
+    "tqdm",
+]
+
+[project.scripts]
+vasp-parameter-benchmarking = "vasp_parameter_benchmarking.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
