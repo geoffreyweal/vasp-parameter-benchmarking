@@ -74,6 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--root", default="VASP_Parameter_Benchmarking", help="Output root directory."
     )
+    p_setup.add_argument(
+        "--no-name-jobs",
+        dest="name_jobs",
+        action="store_false",
+        help="Keep submit.sl's own --job-name. By default each job is named "
+        "vasp-para-bench-<folder> (e.g. vasp-para-bench-001) so jobs are "
+        "identifiable in squeue/sacct (the scheduler still assigns the job ID).",
+    )
 
     # ---- submit ----------------------------------------------------------
     p_submit = sub.add_parser("submit", help="Part 2: submit all jobs to SLURM.")
@@ -139,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
                 vasp_files=args.vasp_files,
                 submit=args.submit,
                 root=args.root,
+                name_jobs=args.name_jobs,
             )
         elif args.command == "submit":
             from .submit import submit

@@ -18,11 +18,12 @@ sweep (mode + parameters) is written to
 tags were swept, in what order, and what the baseline is; a ``folder_index.html``
 navigator is (re)written so you can look a combination up by folder number.
 
-The submit.sl is copied verbatim with one exception: if the parameters file
-carries a ``mem_per_cpu`` table, this sets that config's ``#SBATCH
---mem-per-cpu`` directive (inserting one if absent) so heavier configs request
-more memory. Everything else - the parallel layout and all other SLURM
-directives - is exactly what you provide.
+The submit.sl is copied verbatim except for at most two ``#SBATCH`` directives
+(inserted if absent): ``--job-name``, set by default to ``vasp-para-bench-<folder>``
+so each job is identifiable in ``squeue`` (pass ``--no-name-jobs`` to keep your
+own), and ``--mem-per-cpu`` when the parameters file carries a ``mem_per_cpu``
+table (so heavier configs request more memory). Everything else - the parallel
+layout and all other SLURM directives - is exactly what you provide.
 """
 
 from __future__ import annotations
@@ -50,9 +51,44 @@ from .parameters import (
     validate_mem_specs,
 )
 
-# Matches a "#SBATCH --mem-per-cpu=<v>" or "... --mem-per-cpu <v>" directive
-# (not a commented "##SBATCH", and not the unrelated "--mem"/"--mem-per-gpu").
-_MEM_DIRECTIVE_RE = re.compile(r"^\s*#SBATCH\s+--mem-per-cpu(?:=|\s+)\S")
+def _directive_re(long: str, short: str | None) -> "re.Pattern[str]":
+    """Match a ``#SBATCH`` line that already sets ``--<long>`` (or ``-<short>``).
+
+    Matches both ``--name=value`` and ``--name value`` forms (and ``-X value`` for
+    the short flag); ignores commented ``##SBATCH`` lines and unrelated flags that
+    merely share a prefix (e.g. ``--mem`` vs ``--mem-per-cpu``).
+    """
+    forms = [rf"--{re.escape(long)}(?:=|\s+)"]
+    if short:
+        forms.append(rf"-{re.escape(short)}\s+")
+    return re.compile(rf"^\s*#SBATCH\s+(?:{'|'.join(forms)})\S")
+
+
+def set_sbatch_directive(
+    submit_path: Path, long: str, value: str, short: str | None = None
+) -> None:
+    """Set ``#SBATCH --<long>=<value>`` in a submit script, in place.
+
+    Replaces an existing directive (keeping its position) or, if there is none,
+    inserts one after the last ``#SBATCH`` line (or after the shebang). Only this
+    one directive is ever touched - the rest of the script is left verbatim.
+    """
+    rx = _directive_re(long, short)
+    lines = submit_path.read_text().splitlines()
+    new_line = f"#SBATCH --{long}={value}"
+
+    for i, line in enumerate(lines):
+        if rx.match(line):
+            lines[i] = new_line
+            submit_path.write_text("\n".join(lines) + "\n")
+            return
+
+    insert_at = next(
+        (i + 1 for i in reversed(range(len(lines))) if lines[i].lstrip().startswith("#SBATCH")),
+        1 if lines and lines[0].startswith("#!") else 0,
+    )
+    lines.insert(insert_at, new_line)
+    submit_path.write_text("\n".join(lines) + "\n")
 
 # Width of the zero-padded folder numbers (001, 002, ...).
 NUMBER_WIDTH = 3
@@ -63,6 +99,10 @@ REQUIRED_INPUTS = ["INCAR", "POSCAR", "POTCAR"]
 
 PARAMETERS_FILENAME = "vasp_parameter_benchmarking_parameters.txt"
 SUBMIT_NAME = "submit.sl"
+
+# SLURM job names are set (by default) to this prefix + the folder number,
+# e.g. "vasp-para-bench-001", so jobs are identifiable in squeue/sacct.
+JOB_NAME_PREFIX = "vasp-para-bench-"
 
 
 def resolve_specs(
@@ -122,27 +162,13 @@ def mem_per_cpu_for(
 
 
 def set_mem_per_cpu(submit_path: Path, mem: str) -> None:
-    """Set ``#SBATCH --mem-per-cpu=<mem>`` in a submit script, in place.
+    """Set ``#SBATCH --mem-per-cpu=<mem>`` in a submit script, in place."""
+    set_sbatch_directive(submit_path, "mem-per-cpu", mem)
 
-    Replaces an existing directive (keeping its position) or, if there is none,
-    inserts one after the last ``#SBATCH`` line (or after the shebang). Only this
-    one directive is ever touched - the rest of the script is left verbatim.
-    """
-    lines = submit_path.read_text().splitlines()
-    new_line = f"#SBATCH --mem-per-cpu={mem}"
 
-    for i, line in enumerate(lines):
-        if _MEM_DIRECTIVE_RE.match(line):
-            lines[i] = new_line
-            submit_path.write_text("\n".join(lines) + "\n")
-            return
-
-    insert_at = next(
-        (i + 1 for i in reversed(range(len(lines))) if lines[i].lstrip().startswith("#SBATCH")),
-        1 if lines and lines[0].startswith("#!") else 0,
-    )
-    lines.insert(insert_at, new_line)
-    submit_path.write_text("\n".join(lines) + "\n")
+def set_job_name(submit_path: Path, name: str) -> None:
+    """Set ``#SBATCH --job-name=<name>`` (replacing ``-J`` too) in place."""
+    set_sbatch_directive(submit_path, "job-name", name, short="J")
 
 
 def _apply_parameters(
@@ -174,13 +200,17 @@ def setup(
     vasp_files: str = "VASP_Files",
     submit: str | None = None,
     root: str = "VASP_Parameter_Benchmarking",
+    name_jobs: bool = True,
 ) -> list[Path]:
     """Generate the benchmarking tree. Returns the list of created directories.
 
     Every file in ``vasp_files`` is copied unchanged into each configuration;
     then the swept INCAR tags are set and, if swept, the KPOINTS grid is written.
     The submit script (``--submit``, default ``<vasp_files>/submit.sl``) is copied
-    in as ``submit.sl`` unchanged.
+    in as ``submit.sl``; the only directives it may edit are ``--mem-per-cpu``
+    (from a ``mem_per_cpu`` table) and ``--job-name``: unless ``name_jobs`` is
+    False, each job is named ``<JOB_NAME_PREFIX><folder>`` (e.g.
+    ``vasp-para-bench-001``) so it is identifiable in ``squeue``/``sacct``.
 
     ``mode``/``kpoints_style`` given here (from the CLI) win over the parameters
     file; if neither sets them they default to ``grid`` / ``gamma``.
@@ -287,6 +317,9 @@ def setup(
         mem = mem_per_cpu_for(assignment, specs, mem_specs)
         if mem is not None:
             set_mem_per_cpu(run_dir / SUBMIT_NAME, mem)
+        # Name the SLURM job after the folder so it is identifiable in squeue.
+        if name_jobs:
+            set_job_name(run_dir / SUBMIT_NAME, JOB_NAME_PREFIX + run_dir.name)
         # Record this new folder so later combinations in the same run can match it.
         existing_assignments[run_dir] = index_mod.read_assignment(run_dir, specs)
         created.append(run_dir)
@@ -305,5 +338,7 @@ def setup(
     for m in mem_specs:
         print(f"  - mem-per-cpu (from {m.driver}): {', '.join(m.values)} "
               "[written into each submit.sl]")
+    if name_jobs:
+        print(f"  - job name: set to {JOB_NAME_PREFIX}<folder> in each submit.sl")
     print(f"Folder navigator: {index_path}")
     return created

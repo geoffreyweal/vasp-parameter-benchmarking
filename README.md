@@ -8,9 +8,10 @@ an interactive report of **convergence vs cost**.
 > **Sibling tool.** [`vasp-core-benchmarking`](https://github.com/geoffreyweal/vasp-core-benchmarking)
 > benchmarks the *parallel layout* (MPI ranks × OpenMP threads) by rewriting
 > `submit.sl`. This tool does the opposite: it **leaves `submit.sl` alone** and
-> varies only the calculation parameters in `INCAR`/`KPOINTS` — the one exception
-> being the optional `--mem-per-cpu` directive (see below), which you can have it
-> set per config so heavier runs get more memory.
+> varies only the calculation parameters in `INCAR`/`KPOINTS`. The only `#SBATCH`
+> directives it ever touches are `--job-name` (set to `vasp-para-bench-<folder>`
+> so jobs are identifiable in `squeue`; opt out with `--no-name-jobs`) and the
+> optional `--mem-per-cpu` (see below), so heavier runs can get more memory.
 
 ## Install
 
@@ -45,7 +46,7 @@ VASP_Files/
 ├── POSCAR     # required
 ├── POTCAR     # required
 ├── KPOINTS    # required (unless you only sweep INCAR with KSPACING)
-├── submit.sl  # required — copied into every job (verbatim, bar an optional --mem-per-cpu)
+├── submit.sl  # required — copied into every job (verbatim, bar --job-name/--mem-per-cpu)
 └── ...         # any extras (ML_FF, WAVECAR, CHGCAR, …) are copied too
 ```
 
@@ -53,9 +54,10 @@ Every file in `VASP_Files/` is copied into each benchmark directory **unchanged*
 including your `submit.sl`. The tool then edits **only** the parameters you sweep:
 it sets the relevant `INCAR` tags and, if you sweep the k-point grid, writes a
 fresh `KPOINTS` file. Your base `INCAR`/`KPOINTS` stay ordinary single-value
-files; the sweep lives in the parameters file. (The sole edit ever made to
-`submit.sl` is the `--mem-per-cpu` directive, and only if you add a `mem_per_cpu`
-table — see below.)
+files; the sweep lives in the parameters file. (The only edits ever made to
+`submit.sl` are the `--job-name` directive — set to `vasp-para-bench-<folder>` by
+default, disable with `--no-name-jobs` — and `--mem-per-cpu`, if you add a
+`mem_per_cpu` table; see below.)
 
 > `POTCAR` files are distributed under the VASP licence, so provide your own.
 
