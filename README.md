@@ -66,12 +66,12 @@ per swept thing, plus optional run settings (like `mode`) at the top:
 mode = grid
 
 # what to sweep — one line each
-INCAR ENCUT = 400, 500, 600, 700, 800
+INCAR ENCUT = 300, 400, 500, 600, 700
 INCAR SIGMA = 0.05, 0.1, 0.2
-KPOINTS      = 2x2x2, 4x4x4, 6x6x6, 8x8x8
+KPOINTS      = 1x1x1
 
 # optional: more memory for the heavier configs (applied by `submit`)
-mem_per_cpu from ENCUT = 2G, 2G, 3G, 4G, 6G
+mem_per_cpu from ENCUT = 2G, 2G, 4G, 4G, 6G
 ```
 
 - `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Add a new parameter by
