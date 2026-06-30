@@ -11,19 +11,23 @@ by reading existing folders' INCAR/KPOINTS). Re-running after adding a parameter
 therefore reuses every completed run and only appends the genuinely new folders -
 existing folders are never renamed, touched or re-run.
 
-Each new directory gets the VASP inputs *and the submit.sl* copied unchanged; only
-the swept parameters are edited (INCAR tags set, KPOINTS grid written). The
-effective sweep (mode + parameters) is written to
+Each new directory gets the VASP inputs *and the submit.sl* copied in; only the
+swept parameters are edited (INCAR tags set, KPOINTS grid written). The effective
+sweep (mode + parameters) is written to
 ``<root>/vasp_parameter_benchmarking_parameters.txt`` so the report knows which
 tags were swept, in what order, and what the baseline is; a ``folder_index.html``
 navigator is (re)written so you can look a combination up by folder number.
 
-Unlike vasp-core-benchmarking, the submit.sl here is never rewritten - the
-parallel layout and all SLURM directives are exactly what you provide.
+The submit.sl is copied verbatim with one exception: if the parameters file
+carries a ``mem_per_cpu`` table, this sets that config's ``#SBATCH
+--mem-per-cpu`` directive (inserting one if absent) so heavier configs request
+more memory. Everything else - the parallel layout and all other SLURM
+directives - is exactly what you provide.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -40,10 +44,15 @@ from .parameters import (
     merge_specs,
     parse_cli_incar,
     parse_cli_kpoints,
+    parse_mem_mb,
     parse_parameters_file,
     render_parameters_file,
     validate_mem_specs,
 )
+
+# Matches a "#SBATCH --mem-per-cpu=<v>" or "... --mem-per-cpu <v>" directive
+# (not a commented "##SBATCH", and not the unrelated "--mem"/"--mem-per-gpu").
+_MEM_DIRECTIVE_RE = re.compile(r"^\s*#SBATCH\s+--mem-per-cpu(?:=|\s+)\S")
 
 # Width of the zero-padded folder numbers (001, 002, ...).
 NUMBER_WIDTH = 3
@@ -84,6 +93,56 @@ def resolve_specs(
         cli_specs.append(parse_cli_kpoints(kpoints_flag))
 
     return merge_specs(file_specs, cli_specs), settings, mem_specs
+
+
+def mem_per_cpu_for(
+    assignment: dict[str, str], specs: list[ParamSpec], mem_specs: list[MemSpec]
+) -> str | None:
+    """Greatest ``--mem-per-cpu`` value for one assignment, or None if none applies.
+
+    Each :class:`MemSpec` is keyed by position to its driving parameter's swept
+    values, so the assignment's value of that parameter selects the aligned
+    memory value. When several tables apply, the largest value wins.
+    """
+    if not mem_specs:
+        return None
+    by_key = {s.key: s for s in specs}
+    candidates: list[str] = []
+    for m in mem_specs:
+        drv = by_key.get(m.driver)
+        if drv is None:
+            continue
+        actual = assignment.get(m.driver)
+        if actual is None:
+            continue
+        table = dict(zip(drv.values, m.values))
+        if actual in table:
+            candidates.append(table[actual])
+    return max(candidates, key=parse_mem_mb) if candidates else None
+
+
+def set_mem_per_cpu(submit_path: Path, mem: str) -> None:
+    """Set ``#SBATCH --mem-per-cpu=<mem>`` in a submit script, in place.
+
+    Replaces an existing directive (keeping its position) or, if there is none,
+    inserts one after the last ``#SBATCH`` line (or after the shebang). Only this
+    one directive is ever touched - the rest of the script is left verbatim.
+    """
+    lines = submit_path.read_text().splitlines()
+    new_line = f"#SBATCH --mem-per-cpu={mem}"
+
+    for i, line in enumerate(lines):
+        if _MEM_DIRECTIVE_RE.match(line):
+            lines[i] = new_line
+            submit_path.write_text("\n".join(lines) + "\n")
+            return
+
+    insert_at = next(
+        (i + 1 for i in reversed(range(len(lines))) if lines[i].lstrip().startswith("#SBATCH")),
+        1 if lines and lines[0].startswith("#!") else 0,
+    )
+    lines.insert(insert_at, new_line)
+    submit_path.write_text("\n".join(lines) + "\n")
 
 
 def _apply_parameters(
@@ -219,11 +278,15 @@ def setup(
             else:
                 shutil.copy2(src, dest)
 
-        # The submit script is copied unchanged (may already be among the inputs;
+        # The submit script is copied in (may already be among the inputs;
         # copying again as submit.sl makes the --submit override authoritative).
         shutil.copy2(submit_path, run_dir / SUBMIT_NAME)
 
         _apply_parameters(run_dir, specs, assignment, kpoints_style)
+        # If a memory table was given, set this config's --mem-per-cpu directive.
+        mem = mem_per_cpu_for(assignment, specs, mem_specs)
+        if mem is not None:
+            set_mem_per_cpu(run_dir / SUBMIT_NAME, mem)
         # Record this new folder so later combinations in the same run can match it.
         existing_assignments[run_dir] = index_mod.read_assignment(run_dir, specs)
         created.append(run_dir)
@@ -241,6 +304,6 @@ def setup(
         print(f"  - {target}: {', '.join(s.values)}")
     for m in mem_specs:
         print(f"  - mem-per-cpu (from {m.driver}): {', '.join(m.values)} "
-              "[applied at submit time]")
+              "[written into each submit.sl]")
     print(f"Folder navigator: {index_path}")
     return created

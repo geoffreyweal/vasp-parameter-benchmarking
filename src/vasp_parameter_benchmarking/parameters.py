@@ -21,9 +21,9 @@ A run-level ``mode`` setting may sit at the top of the parameters file::
 
 A ``mem_per_cpu from <KEY>`` line requests more SLURM memory for the heavier
 configs - one ``--mem-per-cpu`` value per value of the driving parameter, lined
-up by position. It is not a sweep axis (it creates no configurations); ``submit``
-applies it as ``sbatch --mem-per-cpu=...`` so ``submit.sl`` is never edited. When
-several tables apply to a config the greatest value is used::
+up by position. It is not a sweep axis (it creates no configurations); ``setup``
+writes the chosen value into each config's ``#SBATCH --mem-per-cpu`` directive.
+When several tables apply to a config the greatest value is used::
 
     INCAR ENCUT = 300, 400, 500
     mem_per_cpu from ENCUT = 2G, 3G, 4G
@@ -71,8 +71,8 @@ class MemSpec:
 
     ``values`` lines up 1:1 with the driving spec's ``values``: the i-th memory
     value is used for configs whose ``driver`` parameter takes the i-th value.
-    It is not a sweep axis - it never creates configurations, it only tells
-    ``submit`` how much memory to request for each one.
+    It is not a sweep axis - it never creates configurations; ``setup`` uses it to
+    set the ``#SBATCH --mem-per-cpu`` directive in each config's submit.sl.
     """
 
     driver: str  # the ParamSpec.key this tracks (e.g. "ENCUT" or "KPOINTS")

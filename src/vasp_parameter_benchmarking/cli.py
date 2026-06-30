@@ -88,12 +88,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only (re)submit configs with no usable result; reset each to its "
         "inputs + submit.sl first.",
     )
-    p_submit.add_argument(
-        "--no-mem",
-        action="store_true",
-        help="Ignore the parameters file's mem_per_cpu table; submit scripts "
-        "exactly as written (use their own --mem-per-cpu).",
-    )
 
     # ---- report ----------------------------------------------------------
     p_report = sub.add_parser("report", help="Part 3: collect results into CSV + HTML.")
@@ -154,7 +148,6 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 yes=args.yes,
                 retry_failed=args.retry_failed,
-                no_mem=args.no_mem,
             )
         elif args.command == "report":
             from .report import report

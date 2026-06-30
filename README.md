@@ -7,8 +7,10 @@ an interactive report of **convergence vs cost**.
 
 > **Sibling tool.** [`vasp-core-benchmarking`](https://github.com/geoffreyweal/vasp-core-benchmarking)
 > benchmarks the *parallel layout* (MPI ranks × OpenMP threads) by rewriting
-> `submit.sl`. This tool does the opposite: it **never touches `submit.sl`** and
-> varies only the calculation parameters in `INCAR`/`KPOINTS`.
+> `submit.sl`. This tool does the opposite: it **leaves `submit.sl` alone** and
+> varies only the calculation parameters in `INCAR`/`KPOINTS` — the one exception
+> being the optional `--mem-per-cpu` directive (see below), which you can have it
+> set per config so heavier runs get more memory.
 
 ## Install
 
@@ -29,7 +31,7 @@ The tool runs in three parts, plus an optional cleanup step.
 | Subcommand | Purpose |
 | --- | --- |
 | `setup`  | Generate one benchmark directory per parameter combination. |
-| `submit` | `sbatch` every generated job (submit.sl copied unchanged). |
+| `submit` | `sbatch` every generated job (submit.sl as written by `setup`). |
 | `report` | Collect convergence + cost into CSV + HTML. |
 | `clean`  | Delete bulky VASP outputs once you're done. |
 
@@ -43,7 +45,7 @@ VASP_Files/
 ├── POSCAR     # required
 ├── POTCAR     # required
 ├── KPOINTS    # required (unless you only sweep INCAR with KSPACING)
-├── submit.sl  # required — copied UNCHANGED into every job
+├── submit.sl  # required — copied into every job (verbatim, bar an optional --mem-per-cpu)
 └── ...         # any extras (ML_FF, WAVECAR, CHGCAR, …) are copied too
 ```
 
@@ -51,7 +53,9 @@ Every file in `VASP_Files/` is copied into each benchmark directory **unchanged*
 including your `submit.sl`. The tool then edits **only** the parameters you sweep:
 it sets the relevant `INCAR` tags and, if you sweep the k-point grid, writes a
 fresh `KPOINTS` file. Your base `INCAR`/`KPOINTS` stay ordinary single-value
-files; the sweep lives in the parameters file.
+files; the sweep lives in the parameters file. (The sole edit ever made to
+`submit.sl` is the `--mem-per-cpu` directive, and only if you add a `mem_per_cpu`
+table — see below.)
 
 > `POTCAR` files are distributed under the VASP licence, so provide your own.
 
@@ -84,9 +88,10 @@ mem_per_cpu from ENCUT = 2G, 2G, 4G, 4G, 6G
   heavier configs (e.g. higher `ENCUT` or denser `KPOINTS`). Give one
   `--mem-per-cpu` value per value of the driving parameter, lined up by position
   (`2G`, `512M`, or a bare number in MB). It is **not** a sweep axis — it creates
-  no extra folders — and `submit` applies it as `sbatch --mem-per-cpu=...`, so
-  `submit.sl` is still never edited. List several lines (e.g. one keyed to
-  `ENCUT`, one to `KPOINTS`) and the **greatest** value wins for each config.
+  no extra folders. `setup` writes the chosen value into each config's
+  `#SBATCH --mem-per-cpu` line (adding one if your `submit.sl` has none), so each
+  folder is self-contained. List several lines (e.g. one keyed to `ENCUT`, one to
+  `KPOINTS`) and the **greatest** value wins for each config.
 - `mode = grid | oat` — see below. A CLI `--mode` overrides it.
 
 You can also (or instead) pass sweeps on the command line — `--incar
@@ -175,13 +180,9 @@ vasp-parameter-benchmarking submit --yes      # no prompt
 ```
 
 Finds every `submit.sl` under `--root` and `sbatch`es it as-is, pausing briefly
-every 10 submissions to avoid scheduler rate limits.
-
-If the parameters file has a `mem_per_cpu` table (see above), each job is
-launched with `sbatch --mem-per-cpu=<value>` chosen from that config's swept
-parameters — the CLI flag overrides the script's own directive, so `submit.sl`
-stays unchanged. `--dry-run` prints the value picked for each config; pass
-`--no-mem` to ignore the table and submit the scripts exactly as written.
+every 10 submissions to avoid scheduler rate limits. Any per-config
+`--mem-per-cpu` was already written into each `submit.sl` at `setup` time (if you
+gave a `mem_per_cpu` table), so submission needs no special flags.
 
 #### Retrying failed jobs
 
