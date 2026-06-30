@@ -441,8 +441,9 @@ def report(
     print(f"Building interactive plot -> {html_path} (embedding plotly.js)...")
     write_html(df, specs, html_path)
 
-    # Refresh the folder navigator so its run/pending status reflects this report.
-    index_path = index_mod.write_index(root_dir, specs)
+    # Refresh the folder navigator so its run/running/failed/pending status
+    # reflects this report (sacct distinguishes running from failed).
+    index_path = index_mod.write_index(root_dir, specs, use_sacct=use_sacct)
     print(f"Refreshed folder navigator -> {index_path}")
 
     if skipped:

@@ -87,3 +87,47 @@ def get_utilisation(run_dir: str | Path) -> tuple[float, float, float] | None:
     if data is None:
         return None
     return parse_sacct(data)
+
+
+# SLURM states that mean the job is still in the system (not finished), so a run
+# with no result yet is in progress rather than failed. Matched as a prefix
+# because sacct may decorate a state (e.g. "CANCELLED by 12345").
+_ACTIVE_STATES = (
+    "RUNNING", "PENDING", "REQUEUED", "REQUEUE_HOLD", "RESIZING",
+    "SUSPENDED", "CONFIGURING", "COMPLETING", "SIGNALING", "STAGE_OUT",
+)
+
+
+def job_state(job_id: int) -> str | None:
+    """Return the SLURM state of ``job_id`` (e.g. ``"RUNNING"``, ``"FAILED"``).
+
+    Returns None if sacct is unavailable or the job is unknown to it.
+    """
+    data = run_sacct(job_id)
+    if not data:
+        return None
+    jobs = data.get("jobs") or []
+    if not jobs:
+        return None
+    state = jobs[0].get("state")
+    # sacct --json gives state as {"current": ["RUNNING"], ...}; tolerate a bare
+    # string or a single value too.
+    current = state.get("current") if isinstance(state, dict) else state
+    if isinstance(current, list):
+        current = current[0] if current else None
+    return str(current).upper() if current else None
+
+
+def is_running(run_dir: str | Path) -> bool | None:
+    """Whether the run's most recent SLURM job is still active (running/queued).
+
+    Returns True/False from sacct, or None if it can't be determined (no job id
+    found, or sacct unavailable) so callers can fall back to a file-based guess.
+    """
+    job_id = find_job_id(run_dir)
+    if job_id is None:
+        return None
+    state = job_state(job_id)
+    if state is None:
+        return None
+    return any(state.startswith(s) for s in _ACTIVE_STATES)

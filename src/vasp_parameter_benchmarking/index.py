@@ -4,7 +4,8 @@ Config directories are named only by number (``001``, ``002``, ...); the
 ``INCAR``/``KPOINTS`` inside each directory define what it is. This module reads
 those files back to learn each folder's swept-parameter values, and builds a
 self-contained HTML page where you pick a value per parameter and it tells you
-which numbered folder holds that variation (and whether it has been run yet).
+which numbered folder holds that variation (and whether it has run, is still
+running, failed, or is pending).
 
 The same value-reading/matching helpers drive ``setup``'s additive behaviour:
 re-running after adding a parameter reuses the folders that already exist and
@@ -19,10 +20,19 @@ from pathlib import Path
 
 from . import incar as incar_mod
 from . import kpoints as kpoints_mod
+from . import sacct
 from .outcar import final_energy
 from .parameters import INCAR, KPOINTS, ParamSpec
 
 INDEX_FILENAME = "folder_index.html"
+
+# Per-status display text and CSS class, shared by the table and the result chips.
+STATUS_TEXT = {
+    "done": "✓ run",
+    "running": "⏳ running",
+    "failed": "✗ failed",
+    "pending": "— pending",
+}
 
 
 def read_assignment(run_dir: Path, specs: list[ParamSpec]) -> dict[str, str | None]:
@@ -70,15 +80,51 @@ def config_dirs(root_dir: Path) -> list[Path]:
     return sorted(dirs, key=lambda p: int(p.name))
 
 
-def scan_configs(root_dir: Path, specs: list[ParamSpec]) -> list[dict]:
-    """Read every numbered folder into ``{folder, params, has_result}`` entries."""
+def run_status(run_dir: Path, use_sacct: bool = True) -> str:
+    """Classify a config folder as ``"done"``, ``"running"``, ``"failed"`` or ``"pending"``.
+
+    * **done** - the OUTCAR holds a final ``energy(sigma->0)`` (a usable result);
+    * **running** - launched with no result yet, and its SLURM job is still
+      active (running or queued) according to ``sacct``;
+    * **failed** - launched (an OUTCAR, OSZICAR or ``slurm-<id>.out`` is present)
+      but produced no final energy and is not still running: it crashed, was
+      killed, or timed out;
+    * **pending** - no sign the run has been launched yet (only input files).
+
+    When ``use_sacct`` is False (or ``sacct`` is unavailable / the job is no
+    longer known to it) a launched run with no result is reported as failed -
+    running and failed cannot be told apart without the scheduler.
+    """
+    outcar = run_dir / "OUTCAR"
+    if outcar.is_file() and final_energy(outcar) is not None:
+        return "done"
+    started = (
+        outcar.is_file()
+        or (run_dir / "OSZICAR").is_file()
+        or sacct.find_job_id(run_dir) is not None
+    )
+    if not started:
+        return "pending"
+    if use_sacct and sacct.is_running(run_dir):
+        return "running"
+    return "failed"
+
+
+def scan_configs(
+    root_dir: Path, specs: list[ParamSpec], use_sacct: bool = True
+) -> list[dict]:
+    """Read every numbered folder into ``{folder, params, status, has_result}``."""
     entries: list[dict] = []
     for d in config_dirs(root_dir):
         params = read_assignment(d, specs)
-        outcar = d / "OUTCAR"
-        has_result = outcar.is_file() and final_energy(outcar) is not None
+        status = run_status(d, use_sacct=use_sacct)
         entries.append(
-            {"folder": d.name, "params": params, "has_result": bool(has_result)}
+            {
+                "folder": d.name,
+                "params": params,
+                "status": status,
+                "has_result": status == "done",
+            }
         )
     return entries
 
@@ -114,13 +160,14 @@ def build_index_html(entries: list[dict], specs: list[ParamSpec]) -> str:
     rows = []
     for e in entries:
         cells = "".join(f"<td>{esc(e['params'].get(k))}</td>" for k in keys)
-        status = "✓ run" if e["has_result"] else "— pending"
-        status_cls = "done" if e["has_result"] else "pending"
+        status_cls = e["status"]
+        status = STATUS_TEXT[status_cls]
         rows.append(
             f'<tr><td class="num">{esc(e["folder"])}</td>{cells}'
             f'<td class="{status_cls}">{status}</td></tr>'
         )
     table_rows = "\n".join(rows)
+    status_text_json = json.dumps(STATUS_TEXT)
 
     return f"""<style>
   :root {{ --fg:#222; --muted:#667; --accent:#2c7fb8; --line:#e2e4e8; }}
@@ -145,12 +192,15 @@ def build_index_html(entries: list[dict], specs: list[ParamSpec]) -> str:
                    font-variant-numeric: tabular-nums; }}
   .chip .st {{ font-size: 11px; }}
   .status-done {{ color: #2ca25f; font-weight: 600; }}
+  .status-running {{ color: #2c7fb8; font-weight: 600; }}
+  .status-failed {{ color: #c0392b; font-weight: 600; }}
   .status-pending {{ color: #d08000; font-weight: 600; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
   th, td {{ text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }}
   th {{ color: var(--muted); font-weight: 600; }}
   td.num {{ font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }}
-  td.done {{ color: #2ca25f; }} td.pending {{ color: #999; }}
+  td.done {{ color: #2ca25f; }} td.running {{ color: #2c7fb8; }}
+  td.failed {{ color: #c0392b; }} td.pending {{ color: #999; }}
   .wrap {{ overflow-x: auto; }}
 </style>
 
@@ -179,6 +229,7 @@ definition; folder numbers are just labels.</p>
 const DATA = {data_json};
 const KEYS = {keys_json};
 const KINDS = {kinds_json};
+const STATUS_TEXT = {status_text_json};
 
 function valuesMatch(kind, a, b) {{
   if (a == null || b == null) return a === b;
@@ -202,9 +253,7 @@ function lookup() {{
     return;
   }}
   const chips = hits.map(h => {{
-    const st = h.has_result
-      ? '<span class="st status-done">✓ run</span>'
-      : '<span class="st status-pending">— pending</span>';
+    const st = '<span class="st status-' + h.status + '">' + STATUS_TEXT[h.status] + '</span>';
     return '<span class="chip"><span class="folder">' + h.folder + '</span>' + st + '</span>';
   }}).join("");
   const noun = hits.length === 1 ? "folder matches" : "folders match";
@@ -217,9 +266,15 @@ lookup();
 """
 
 
-def write_index(root_dir: Path, specs: list[ParamSpec]) -> Path:
-    """Scan ``root`` and (re)write the navigator HTML. Returns its path."""
-    entries = scan_configs(root_dir, specs)
+def write_index(
+    root_dir: Path, specs: list[ParamSpec], use_sacct: bool = True
+) -> Path:
+    """Scan ``root`` and (re)write the navigator HTML. Returns its path.
+
+    ``use_sacct`` lets the navigator query SLURM to tell a still-running job
+    apart from a failed one; set it False to rely only on local files.
+    """
+    entries = scan_configs(root_dir, specs, use_sacct=use_sacct)
     out_path = root_dir / INDEX_FILENAME
     out_path.write_text(build_index_html(entries, specs))
     return out_path
