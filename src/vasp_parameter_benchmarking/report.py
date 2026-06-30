@@ -11,15 +11,15 @@ For every config directory under ``--root`` with a usable OUTCAR this records:
     ``--no-sacct``.
 
 The HTML report answers the practical question - *how high do I need to push
-this parameter?* For each swept parameter it shows, with the other parameters
-held at their baseline value:
+this parameter?* It is interactive: you choose which swept parameter goes on
+the x-axis, and you may pin each of the *other* swept parameters to a constant
+value (or leave it on "All values" to plot every combination as a colour-coded
+series). For the current selection it shows:
 
-  * **Convergence** - |E - E_ref| in meV/atom against the highest-fidelity value
-    of that parameter (highest ENCUT, densest KPOINTS, ...);
+  * **Energy** - the final total energy ``energy(sigma->0)`` (eV);
   * **Cost** - mean wall time per electronic step.
 
-A dropdown switches which parameter is shown; a dotted line marks a 1 meV/atom
-convergence guide.
+Controls at the top of the page drive both panels.
 """
 
 from __future__ import annotations
@@ -129,173 +129,251 @@ def collect_run(
     return row
 
 
-def _series_groups(sub: pd.DataFrame, other_keys: list[str]):
-    """Yield ``(label, group_df)`` splitting ``sub`` by the other parameters' values.
+def _figure_payload(df: pd.DataFrame, specs: list[ParamSpec]) -> dict:
+    """Build the JSON payload the in-page JavaScript uses to draw the plots.
 
-    With no other swept parameters there is a single group ("all configs");
-    otherwise each distinct combination of the other parameters is its own series
-    so nothing is hidden and overlapping points are separated by colour.
+    The payload carries one record per usable run (its swept-parameter values,
+    total energy and per-step cost) plus per-parameter metadata (display title,
+    the ordered list of swept values, and whether the values are numeric). The
+    browser uses this to redraw both panels as the controls change, so no
+    server is needed.
     """
-    if not other_keys:
-        yield "all configs", sub
-        return
-    cols = [f"param_{k}" for k in other_keys]
-    for gkey, g in sub.groupby(cols, dropna=False, sort=True):
-        values = gkey if isinstance(gkey, tuple) else (gkey,)
-        label = ", ".join(f"{k}={v}" for k, v in zip(other_keys, values))
-        yield label, g
-
-
-def _build_figure(df: pd.DataFrame, specs: list[ParamSpec]):
-    """Energy + cost vs each swept parameter, with a per-parameter dropdown.
-
-    For the selected parameter, every config is plotted: energy per atom (left)
-    and mean time per electronic step (right) against that parameter's value. The
-    remaining parameters split the points into coloured series, so all data is
-    shown without assuming any baseline.
-    """
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    all_keys = [s.key for s in specs]
-
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=("Energy per atom", "Cost per electronic step"),
-        horizontal_spacing=0.12,
-    )
-
-    spec_traces: list[list[int]] = []  # trace indices belonging to each spec
-    axis_settings: list[dict] = []     # per-spec x-axis title + tick labels
-
-    for si, spec in enumerate(specs):
+    params = []
+    for spec in specs:
         key = spec.key
-        is_kpoints = spec.target == KPOINTS
-        numcol, valcol = f"param_{key}__num", f"param_{key}"
-        sub = df.copy()
-        numeric = numcol in sub.columns and sub[numcol].notna().all() and not sub.empty
-
-        if numeric:
-            sub["_x"] = sub[numcol].astype(float)
-        else:
-            order = {str(v): i for i, v in enumerate(spec.values)}
-            sub["_x"] = sub[valcol].astype(str).map(order).fillna(len(order))
-
-        ticks = sub[["_x", valcol]].drop_duplicates().sort_values("_x")
-        tickvals = ticks["_x"].tolist()
-        ticktext = ticks[valcol].astype(str).tolist()
-        x_title = f"total k-points ({key} grid)" if is_kpoints else key
-
-        other_keys = [k for k in all_keys if k != key]
-        start = len(fig.data)
-        for gi, (label, g) in enumerate(_series_groups(sub, other_keys)):
-            g = g.sort_values("_x")
-            color = PALETTE[gi % len(PALETTE)]
-            energy = pd.to_numeric(g["energy_per_atom_eV"], errors="coerce")
-            cost = pd.to_numeric(g["loop_real_mean_s"], errors="coerce")
-            common = dict(
-                x=g["_x"].tolist(), mode="markers+lines",
-                line=dict(color=color, width=2),
-                marker=dict(size=8, color=color, line=dict(width=1, color="white")),
-                text=g[valcol].astype(str).tolist(), customdata=g["config"],
-                legendgroup=label, visible=(si == 0),
-            )
-            fig.add_trace(
-                go.Scatter(
-                    y=energy.tolist(), name=label, showlegend=True,
-                    hovertemplate=(
-                        f"{key} = %{{text}}<br>energy/atom = %{{y:.5f}} eV"
-                        "<br>folder %{customdata}<extra>" + label + "</extra>"
-                    ),
-                    **common,
-                ),
-                row=1, col=1,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    y=cost.tolist(), name=label, showlegend=False,
-                    hovertemplate=(
-                        f"{key} = %{{text}}<br>time/step = %{{y:.4g}} s"
-                        "<br>folder %{customdata}<extra>" + label + "</extra>"
-                    ),
-                    **common,
-                ),
-                row=1, col=2,
-            )
-        spec_traces.append(list(range(start, len(fig.data))))
-        axis_settings.append(dict(title=x_title, tickvals=tickvals, ticktext=ticktext))
-
-    # Dropdown: show the selected spec's traces and relabel the shared x-axes.
-    buttons = []
-    for si, spec in enumerate(specs):
-        visible = [False] * len(fig.data)
-        for idx in spec_traces[si]:
-            visible[idx] = True
-        s = axis_settings[si]
-        buttons.append(
-            dict(
-                label=spec.key, method="update",
-                args=[
-                    {"visible": visible},
-                    {
-                        "xaxis.title.text": s["title"],
-                        "xaxis.tickvals": s["tickvals"],
-                        "xaxis.ticktext": s["ticktext"],
-                        "xaxis2.title.text": s["title"],
-                        "xaxis2.tickvals": s["tickvals"],
-                        "xaxis2.ticktext": s["ticktext"],
-                    },
-                ],
-            )
+        numcol = f"param_{key}__num"
+        numeric = numcol in df.columns and df[numcol].notna().all() and not df.empty
+        params.append(
+            {
+                "key": key,
+                "isKpoints": spec.target == KPOINTS,
+                "title": f"total k-points ({key} grid)" if spec.target == KPOINTS else key,
+                "values": [str(v) for v in spec.values],
+                "numeric": bool(numeric),
+            }
         )
 
-    first = axis_settings[0]
-    for col in (1, 2):
-        fig.update_xaxes(
-            title_text=first["title"], tickvals=first["tickvals"],
-            ticktext=first["ticktext"], row=1, col=col,
-        )
-    fig.update_yaxes(title_text="energy per atom (eV)", row=1, col=1)
-    fig.update_yaxes(title_text="time / electronic step (s)", rangemode="tozero", row=1, col=2)
+    def _num(value):
+        try:
+            return None if pd.isna(value) else float(value)
+        except (TypeError, ValueError):
+            return None
 
-    fig.update_layout(
-        updatemenus=[
-            dict(
-                type="dropdown", direction="down", showactive=True, active=0,
-                x=0.0, xanchor="left", y=1.16, yanchor="top",
-                buttons=buttons, bgcolor="white", bordercolor="rgba(0,0,0,0.2)",
-                borderwidth=1, font=dict(size=12, family=FONT_FAMILY),
-                pad=dict(t=4, b=4, l=6, r=6),
-            )
-        ],
-        annotations=list(fig.layout.annotations)
-        + [
-            dict(
-                text="Parameter:", x=-0.0, xref="paper", y=1.20, yref="paper",
-                xanchor="right", showarrow=False,
-                font=dict(size=12, family=FONT_FAMILY, color="#444"),
-            )
-        ],
-        title=dict(
-            text="VASP parameter benchmarking &#8226; energy &amp; cost",
-            x=0.5, xanchor="center", font=dict(size=20, family=FONT_FAMILY, color="#222"),
-        ),
-        legend=dict(
-            orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5,
-            font=dict(size=11, family=FONT_FAMILY),
-            title=dict(text="other parameters: ", side="left"),
-        ),
-        template="plotly_white", height=600, margin=dict(t=130, b=120, l=70, r=40),
-        font=dict(family=FONT_FAMILY, size=12, color="#333"),
-        paper_bgcolor="white", plot_bgcolor="white", hovermode="closest",
-        hoverlabel=dict(bgcolor="white", bordercolor="black", font=dict(family=FONT_FAMILY)),
-    )
-    return fig
+    records = []
+    for _, r in df.iterrows():
+        vals, nums = {}, {}
+        for spec in specs:
+            key = spec.key
+            v = r.get(f"param_{key}")
+            vals[key] = None if pd.isna(v) else str(v)
+            nums[key] = _num(r.get(f"param_{key}__num"))
+        records.append(
+            {
+                "config": str(r["config"]),
+                "energy": _num(r.get("energy_eV")),
+                "cost": _num(r.get("loop_real_mean_s")),
+                "vals": vals,
+                "nums": nums,
+            }
+        )
+
+    return {"params": params, "records": records, "palette": PALETTE}
+
+
+# Browser-side application: builds the controls and redraws both panels with
+# Plotly whenever the x-axis parameter or any "constant" selector changes. Kept
+# as a plain string (not an f-string) so its braces are not Python format chars.
+_REPORT_JS = r"""
+const P = window.__REPORT_PAYLOAD__;
+const byKey = {};
+P.params.forEach(p => { byKey[p.key] = p; });
+const ALL = "__all__";
+
+function el(tag, attrs, children) {
+  const e = document.createElement(tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => {
+    if (k === "class") e.className = v; else e.setAttribute(k, v);
+  });
+  (children || []).forEach(c => e.appendChild(
+    typeof c === "string" ? document.createTextNode(c) : c));
+  return e;
+}
+
+function makeSelect(id, options) {
+  const s = el("select", { id: id, class: "vpb-select" });
+  options.forEach(o => {
+    const opt = el("option", { value: o.value }, [o.label]);
+    s.appendChild(opt);
+  });
+  return s;
+}
+
+function buildControls() {
+  const bar = document.getElementById("controls");
+
+  // x-axis selector
+  const xField = el("div", { class: "vpb-field" }, [
+    el("label", { for: "xsel" }, ["x-axis parameter"]),
+    makeSelect("xsel", P.params.map(p => ({ value: p.key, label: p.key }))),
+  ]);
+  bar.appendChild(xField);
+
+  // one "constant" selector per parameter (disabled for the current x-axis one)
+  P.params.forEach(p => {
+    const opts = [{ value: ALL, label: "All values" }]
+      .concat(p.values.map(v => ({ value: v, label: v })));
+    const field = el("div", { class: "vpb-field", id: "field_" + p.key }, [
+      el("label", { for: "const_" + p.key }, [p.key]),
+      makeSelect("const_" + p.key, opts),
+    ]);
+    bar.appendChild(field);
+  });
+
+  document.getElementById("xsel").addEventListener("change", redraw);
+  P.params.forEach(p =>
+    document.getElementById("const_" + p.key).addEventListener("change", redraw));
+}
+
+function xOf(rec, key) {
+  const p = byKey[key];
+  if (p.numeric) return rec.nums[key];
+  const idx = p.values.indexOf(rec.vals[key]);
+  return idx < 0 ? p.values.length : idx;
+}
+
+function redraw() {
+  const xKey = document.getElementById("xsel").value;
+  const xMeta = byKey[xKey];
+
+  // The x-axis parameter cannot also be held constant.
+  P.params.forEach(p => {
+    const sel = document.getElementById("const_" + p.key);
+    const isX = p.key === xKey;
+    sel.disabled = isX;
+    document.getElementById("field_" + p.key).style.opacity = isX ? 0.4 : 1;
+  });
+
+  const otherKeys = P.params.map(p => p.key).filter(k => k !== xKey);
+  const constraints = {};
+  const groupKeys = [];
+  otherKeys.forEach(k => {
+    const v = document.getElementById("const_" + k).value;
+    if (v === ALL) groupKeys.push(k); else constraints[k] = v;
+  });
+
+  let rows = P.records.filter(r =>
+    r.vals[xKey] !== null && r.vals[xKey] !== undefined &&
+    Object.entries(constraints).every(([k, v]) => r.vals[k] === v));
+
+  // Split the remaining rows into series by every "All values" parameter.
+  const groups = new Map();
+  rows.forEach(r => {
+    const label = groupKeys.length
+      ? groupKeys.map(k => k + "=" + r.vals[k]).join(", ")
+      : "all configs";
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(r);
+  });
+  const labels = Array.from(groups.keys()).sort();
+
+  // Shared tick labels: original parameter strings at their x positions.
+  const tickMap = new Map();
+  rows.forEach(r => tickMap.set(xOf(r, xKey), r.vals[xKey]));
+  const tickvals = Array.from(tickMap.keys()).sort((a, b) => a - b);
+  const ticktext = tickvals.map(v => tickMap.get(v));
+
+  const energyTraces = [];
+  const costTraces = [];
+  labels.forEach((label, gi) => {
+    const g = groups.get(label).slice().sort((a, b) => xOf(a, xKey) - xOf(b, xKey));
+    const color = P.palette[gi % P.palette.length];
+    const x = g.map(r => xOf(r, xKey));
+    const text = g.map(r => r.vals[xKey]);
+    const cfg = g.map(r => r.config);
+    const showLegend = groupKeys.length > 0;
+    const common = {
+      x: x, text: text, customdata: cfg, mode: "markers+lines",
+      line: { color: color, width: 2 },
+      marker: { size: 8, color: color, line: { width: 1, color: "white" } },
+      legendgroup: label, name: label,
+    };
+    energyTraces.push(Object.assign({}, common, {
+      y: g.map(r => r.energy), showlegend: showLegend,
+      hovertemplate: xKey + " = %{text}<br>energy = %{y:.5f} eV" +
+        "<br>folder %{customdata}<extra>" + label + "</extra>",
+    }));
+    costTraces.push(Object.assign({}, common, {
+      y: g.map(r => r.cost), showlegend: false,
+      hovertemplate: xKey + " = %{text}<br>time/step = %{y:.4g} s" +
+        "<br>folder %{customdata}<extra>" + label + "</extra>",
+    }));
+  });
+
+  const FONT = { family: "Helvetica Neue, Helvetica, Arial, sans-serif", size: 12, color: "#333" };
+  const xaxis = { title: { text: xMeta.title }, tickvals: tickvals, ticktext: ticktext };
+  const baseLayout = {
+    template: "plotly_white", font: FONT, paper_bgcolor: "white", plot_bgcolor: "white",
+    hovermode: "closest", margin: { t: 50, b: 60, l: 80, r: 20 },
+    legend: { orientation: "h", yanchor: "top", y: -0.2, xanchor: "center", x: 0.5,
+              font: { size: 11 }, title: { text: "other parameters: " } },
+    hoverlabel: { bgcolor: "white", bordercolor: "black" },
+  };
+  const energyLayout = Object.assign({}, baseLayout, {
+    title: { text: "Energy", x: 0.5, xanchor: "center", font: { size: 16 } },
+    xaxis: xaxis, yaxis: { title: { text: "energy (eV)" } },
+  });
+  const costLayout = Object.assign({}, baseLayout, {
+    title: { text: "Cost per electronic step", x: 0.5, xanchor: "center", font: { size: 16 } },
+    xaxis: xaxis, yaxis: { title: { text: "time / electronic step (s)" }, rangemode: "tozero" },
+  });
+  const opts = { responsive: true, displaylogo: false };
+  Plotly.react("plotEnergy", energyTraces, energyLayout, opts);
+  Plotly.react("plotCost", costTraces, costLayout, opts);
+}
+
+buildControls();
+redraw();
+"""
+
+_REPORT_CSS = """
+body { margin: 0; padding: 24px; background: white;
+  font-family: Helvetica Neue, Helvetica, Arial, sans-serif; color: #222; }
+h1 { font-size: 20px; font-weight: 600; text-align: center; margin: 0 0 18px; }
+#controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;
+  justify-content: center; padding: 14px 16px; margin: 0 auto 18px; max-width: 1100px;
+  background: #f6f8fa; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px; }
+.vpb-field { display: flex; flex-direction: column; gap: 4px; }
+.vpb-field label { font-size: 11px; color: #555; font-weight: 600; }
+.vpb-select { font: 13px Helvetica Neue, Helvetica, Arial, sans-serif; padding: 5px 8px;
+  border: 1px solid rgba(0,0,0,0.25); border-radius: 5px; background: white; min-width: 120px; }
+.vpb-select:disabled { background: #eee; color: #999; }
+#plots { display: flex; flex-wrap: wrap; gap: 12px; max-width: 1300px; margin: 0 auto; }
+#plotEnergy, #plotCost { flex: 1 1 480px; height: 520px; min-width: 360px; }
+"""
 
 
 def write_html(df: pd.DataFrame, specs: list[ParamSpec], out_path: Path) -> None:
-    """Write the report HTML (self-contained, plotly.js embedded)."""
-    _build_figure(df, specs).write_html(str(out_path), include_plotlyjs=True)
+    """Write the self-contained interactive report (plotly.js + data embedded)."""
+    import json
+
+    from plotly.offline import get_plotlyjs
+
+    payload = _figure_payload(df, specs)
+    html = (
+        "<!DOCTYPE html>\n<html lang='en'>\n<head>\n<meta charset='utf-8'>\n"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>\n"
+        "<title>VASP parameter benchmarking &#8226; energy &amp; cost</title>\n"
+        f"<style>{_REPORT_CSS}</style>\n"
+        f"<script>{get_plotlyjs()}</script>\n"
+        "</head>\n<body>\n"
+        "<h1>VASP parameter benchmarking &#8226; energy &amp; cost</h1>\n"
+        "<div id='controls'></div>\n"
+        "<div id='plots'><div id='plotEnergy'></div><div id='plotCost'></div></div>\n"
+        f"<script>window.__REPORT_PAYLOAD__ = {json.dumps(payload)};</script>\n"
+        f"<script>{_REPORT_JS}</script>\n"
+        "</body>\n</html>\n"
+    )
+    out_path.write_text(html, encoding="utf-8")
 
 
 def report(
