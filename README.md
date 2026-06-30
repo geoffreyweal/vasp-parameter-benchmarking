@@ -69,6 +69,9 @@ mode = grid
 INCAR ENCUT = 400, 500, 600, 700, 800
 INCAR SIGMA = 0.05, 0.1, 0.2
 KPOINTS      = 2x2x2, 4x4x4, 6x6x6, 8x8x8
+
+# optional: more memory for the heavier configs (applied by `submit`)
+mem_per_cpu from ENCUT = 2G, 2G, 3G, 4G, 6G
 ```
 
 - `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Add a new parameter by
@@ -77,6 +80,13 @@ KPOINTS      = 2x2x2, 4x4x4, 6x6x6, 8x8x8
 - `KPOINTS = g1, g2, ...` — sweep the k-point grid, each grid written `n1xn2xn3`.
   Grids become Gamma-centred `KPOINTS` files (set `kpoints_style = monkhorst`, or
   pass `--kpoints-style`, to switch).
+- `mem_per_cpu from <KEY> = m1, m2, ...` — request more SLURM memory for the
+  heavier configs (e.g. higher `ENCUT` or denser `KPOINTS`). Give one
+  `--mem-per-cpu` value per value of the driving parameter, lined up by position
+  (`2G`, `512M`, or a bare number in MB). It is **not** a sweep axis — it creates
+  no extra folders — and `submit` applies it as `sbatch --mem-per-cpu=...`, so
+  `submit.sl` is still never edited. List several lines (e.g. one keyed to
+  `ENCUT`, one to `KPOINTS`) and the **greatest** value wins for each config.
 - `mode = grid | oat` — see below. A CLI `--mode` overrides it.
 
 You can also (or instead) pass sweeps on the command line — `--incar
@@ -166,6 +176,12 @@ vasp-parameter-benchmarking submit --yes      # no prompt
 
 Finds every `submit.sl` under `--root` and `sbatch`es it as-is, pausing briefly
 every 10 submissions to avoid scheduler rate limits.
+
+If the parameters file has a `mem_per_cpu` table (see above), each job is
+launched with `sbatch --mem-per-cpu=<value>` chosen from that config's swept
+parameters — the CLI flag overrides the script's own directive, so `submit.sl`
+stays unchanged. `--dry-run` prints the value picked for each config; pass
+`--no-mem` to ignore the table and submit the scripts exactly as written.
 
 #### Retrying failed jobs
 

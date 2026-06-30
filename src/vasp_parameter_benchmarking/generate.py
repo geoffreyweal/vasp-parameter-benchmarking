@@ -34,6 +34,7 @@ from .parameters import (
     INCAR,
     KPOINTS,
     VALID_MODES,
+    MemSpec,
     ParamSpec,
     build_configs,
     merge_specs,
@@ -41,6 +42,7 @@ from .parameters import (
     parse_cli_kpoints,
     parse_parameters_file,
     render_parameters_file,
+    validate_mem_specs,
 )
 
 # Width of the zero-padded folder numbers (001, 002, ...).
@@ -58,20 +60,22 @@ def resolve_specs(
     incar_flags: list[str] | None,
     kpoints_flag: str | None,
     parameters_file: str | None,
-) -> tuple[list[ParamSpec], dict[str, str]]:
-    """Build the merged specs and settings from CLI flags + parameters file.
+) -> tuple[list[ParamSpec], dict[str, str], list[MemSpec]]:
+    """Build the merged specs, settings and memory table from CLI + file.
 
     The file is read from ``parameters_file`` if given, else from the default
     name if it happens to exist; a missing default is fine as long as CLI flags
-    supply the sweep. Returns ``(specs, file_settings)`` - ``file_settings`` may
-    carry ``mode``/``kpoints_style`` read from the file.
+    supply the sweep. Returns ``(specs, file_settings, mem_specs)`` -
+    ``file_settings`` may carry ``mode``/``kpoints_style``; ``mem_specs`` is the
+    per-value ``--mem-per-cpu`` table (file-only; there is no CLI form).
     """
     file_specs: list[ParamSpec] = []
     settings: dict[str, str] = {}
+    mem_specs: list[MemSpec] = []
     if parameters_file:
-        file_specs, settings = parse_parameters_file(parameters_file)
+        file_specs, settings, mem_specs = parse_parameters_file(parameters_file)
     elif Path(PARAMETERS_FILENAME).is_file():
-        file_specs, settings = parse_parameters_file(PARAMETERS_FILENAME)
+        file_specs, settings, mem_specs = parse_parameters_file(PARAMETERS_FILENAME)
 
     cli_specs: list[ParamSpec] = []
     for flag in incar_flags or []:
@@ -79,7 +83,7 @@ def resolve_specs(
     if kpoints_flag:
         cli_specs.append(parse_cli_kpoints(kpoints_flag))
 
-    return merge_specs(file_specs, cli_specs), settings
+    return merge_specs(file_specs, cli_specs), settings, mem_specs
 
 
 def _apply_parameters(
@@ -122,12 +126,17 @@ def setup(
     ``mode``/``kpoints_style`` given here (from the CLI) win over the parameters
     file; if neither sets them they default to ``grid`` / ``gamma``.
     """
-    specs, file_settings = resolve_specs(incar_flags, kpoints_flag, parameters_file)
+    specs, file_settings, mem_specs = resolve_specs(
+        incar_flags, kpoints_flag, parameters_file
+    )
     if not specs:
         raise ValueError(
             "no parameters to sweep; add INCAR/KPOINTS lines to the parameters "
             "file or pass --incar/--kpoints"
         )
+    # CLI flags may have changed a driver's values, so re-check the memory table
+    # lines up with the final merged sweep before we persist it.
+    validate_mem_specs(specs, mem_specs)
 
     # Precedence: CLI argument > parameters-file setting > built-in default.
     mode = mode or file_settings.get("mode") or "grid"
@@ -179,7 +188,7 @@ def setup(
     # tags were swept, their order (-> baseline) and the mode; the actual
     # per-config values are read back from each directory's INCAR/KPOINTS.
     (root_dir / PARAMETERS_FILENAME).write_text(
-        render_parameters_file(specs, mode, kpoints_style)
+        render_parameters_file(specs, mode, kpoints_style, mem_specs)
     )
 
     # Existing numbered folders and the values they already hold. Additive setup
@@ -230,5 +239,8 @@ def setup(
     for s in specs:
         target = "KPOINTS grid" if s.target == KPOINTS else f"INCAR {s.key}"
         print(f"  - {target}: {', '.join(s.values)}")
+    for m in mem_specs:
+        print(f"  - mem-per-cpu (from {m.driver}): {', '.join(m.values)} "
+              "[applied at submit time]")
     print(f"Folder navigator: {index_path}")
     return created

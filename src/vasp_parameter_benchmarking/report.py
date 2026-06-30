@@ -65,7 +65,8 @@ def load_specs(root_dir: Path, parameters_file: str | None = None) -> tuple[list
             f"parameters file not found: {path}\n"
             "Expected the one written by 'setup' in the benchmark root, or pass --parameters."
         )
-    return parse_parameters_file(path)
+    specs, settings, _mem_specs = parse_parameters_file(path)
+    return specs, settings
 
 
 def collect_run(

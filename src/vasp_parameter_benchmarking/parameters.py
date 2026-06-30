@@ -19,6 +19,15 @@ A run-level ``mode`` setting may sit at the top of the parameters file::
     INCAR ENCUT = 300, 400, 500
     KPOINTS      = 2x2x2, 4x4x4
 
+A ``mem_per_cpu from <KEY>`` line requests more SLURM memory for the heavier
+configs - one ``--mem-per-cpu`` value per value of the driving parameter, lined
+up by position. It is not a sweep axis (it creates no configurations); ``submit``
+applies it as ``sbatch --mem-per-cpu=...`` so ``submit.sl`` is never edited. When
+several tables apply to a config the greatest value is used::
+
+    INCAR ENCUT = 300, 400, 500
+    mem_per_cpu from ENCUT = 2G, 3G, 4G
+
 The specs are then expanded into *configurations* - one per directory - in one
 of two modes:
 
@@ -56,6 +65,67 @@ class ParamSpec:
     values: list[str]
 
 
+@dataclass
+class MemSpec:
+    """A ``--mem-per-cpu`` lookup keyed positionally to a swept parameter.
+
+    ``values`` lines up 1:1 with the driving spec's ``values``: the i-th memory
+    value is used for configs whose ``driver`` parameter takes the i-th value.
+    It is not a sweep axis - it never creates configurations, it only tells
+    ``submit`` how much memory to request for each one.
+    """
+
+    driver: str  # the ParamSpec.key this tracks (e.g. "ENCUT" or "KPOINTS")
+    values: list[str]  # one mem-per-cpu value per driver value, by position
+
+
+# SLURM memory-size suffixes, expressed as a multiple of one megabyte. SLURM
+# treats these as binary (1024-based) and a bare number as megabytes (the
+# default unit for --mem-per-cpu).
+_MEM_UNITS = {"K": 1.0 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 ** 2}
+
+
+def parse_mem_mb(text: str) -> float:
+    """Parse a SLURM memory size (``"2G"``, ``"512M"``, ``"4096"``) into MB.
+
+    Used to compare memory values (so the greatest can be chosen) and to validate
+    the table up front; raises ``ValueError`` on anything unparseable.
+    """
+    s = str(text).strip()
+    if not s:
+        raise ValueError("empty memory value")
+    unit = s[-1].upper()
+    if unit in _MEM_UNITS:
+        num, factor = s[:-1].strip(), _MEM_UNITS[unit]
+    else:
+        num, factor = s, 1.0
+    try:
+        mb = float(num) * factor
+    except ValueError:
+        raise ValueError(
+            f"invalid memory value {text!r}: expected e.g. '2G', '512M' or '4096' (MB)"
+        ) from None
+    if mb <= 0:
+        raise ValueError(f"invalid memory value {text!r}: must be positive")
+    return mb
+
+
+def validate_mem_specs(specs: list[ParamSpec], mem_specs: list[MemSpec]) -> None:
+    """Check every MemSpec names a swept parameter and aligns 1:1 with its values."""
+    by_key = {s.key: s for s in specs}
+    for m in mem_specs:
+        drv = by_key.get(m.driver)
+        if drv is None:
+            raise ValueError(
+                f"mem_per_cpu refers to '{m.driver}', which is not a swept parameter"
+            )
+        if len(m.values) != len(drv.values):
+            raise ValueError(
+                f"mem_per_cpu from {m.driver} has {len(m.values)} value(s) but "
+                f"{m.driver} sweeps {len(drv.values)}; they must line up 1:1"
+            )
+
+
 def _split_values(raw: str) -> list[str]:
     """Split a comma-separated value list, trimming blanks, keeping order."""
     return [v.strip() for v in raw.split(",") if v.strip()]
@@ -87,17 +157,22 @@ def parse_cli_kpoints(spec: str) -> ParamSpec:
     return ParamSpec(KPOINTS, KPOINTS, values)
 
 
-def parse_parameters_file(path: str | Path) -> tuple[list[ParamSpec], dict[str, str]]:
-    """Parse a parameters file into ``(specs, settings)``.
+def parse_parameters_file(
+    path: str | Path,
+) -> tuple[list[ParamSpec], dict[str, str], list[MemSpec]]:
+    """Parse a parameters file into ``(specs, settings, mem_specs)``.
 
     Each non-blank, non-comment line is one of::
 
-        mode = grid | oat          # run-level settings (mode, kpoints_style)
-        INCAR <TAG> = v1, v2, ...   # sweep an INCAR tag
-        KPOINTS      = g1, g2, ...  # sweep the KPOINTS grid
+        mode = grid | oat              # run-level settings (mode, kpoints_style)
+        INCAR <TAG> = v1, v2, ...       # sweep an INCAR tag
+        KPOINTS      = g1, g2, ...      # sweep the KPOINTS grid
+        mem_per_cpu from <KEY> = m1, m2 # --mem-per-cpu per value of <KEY>
 
     (``#`` starts a comment, either whole-line or trailing.) Settings are
-    returned as a dict; spec lines as a list of :class:`ParamSpec`.
+    returned as a dict; spec lines as a list of :class:`ParamSpec`; any
+    ``mem_per_cpu`` lines as a list of :class:`MemSpec` (validated to line up
+    with their driving parameter).
     """
     p = Path(path)
     if not p.is_file():
@@ -105,6 +180,7 @@ def parse_parameters_file(path: str | Path) -> tuple[list[ParamSpec], dict[str, 
 
     specs: list[ParamSpec] = []
     settings: dict[str, str] = {}
+    mem_specs: list[MemSpec] = []
     for lineno, raw in enumerate(p.read_text().splitlines(), start=1):
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -130,33 +206,57 @@ def parse_parameters_file(path: str | Path) -> tuple[list[ParamSpec], dict[str, 
                     f"{p}:{lineno}: expected 'INCAR <TAG> = ...', got {raw!r}"
                 )
             specs.append(parse_cli_incar(f"{tokens[1]}={rhs}"))
+        elif tokens[0].lower() == "mem_per_cpu":
+            if len(tokens) != 3 or tokens[1].lower() != "from":
+                raise ValueError(
+                    f"{p}:{lineno}: expected 'mem_per_cpu from <KEY> = m1, m2, ...', got {raw!r}"
+                )
+            values = _split_values(rhs)
+            if not values:
+                raise ValueError(f"{p}:{lineno}: no memory values after '='")
+            for v in values:  # validate every size up front
+                try:
+                    parse_mem_mb(v)
+                except ValueError as exc:
+                    raise ValueError(f"{p}:{lineno}: {exc}") from None
+            mem_specs.append(MemSpec(tokens[2].upper(), values))
         elif tokens[0].lower() in RECOGNISED_SETTINGS and len(tokens) == 1:
             settings[tokens[0].lower()] = rhs.strip()
         else:
             raise ValueError(
-                f"{p}:{lineno}: unknown line {raw!r}; expected INCAR/KPOINTS or a "
-                f"setting ({', '.join(RECOGNISED_SETTINGS)})"
+                f"{p}:{lineno}: unknown line {raw!r}; expected INCAR/KPOINTS, "
+                f"mem_per_cpu, or a setting ({', '.join(RECOGNISED_SETTINGS)})"
             )
 
     if "mode" in settings and settings["mode"] not in VALID_MODES:
         raise ValueError(
             f"{p}: invalid mode {settings['mode']!r}; use one of {', '.join(VALID_MODES)}"
         )
-    return specs, settings
+    try:
+        validate_mem_specs(specs, mem_specs)
+    except ValueError as exc:
+        raise ValueError(f"{p}: {exc}") from None
+    return specs, settings, mem_specs
 
 
 def render_parameters_file(
-    specs: list[ParamSpec], mode: str, kpoints_style: str
+    specs: list[ParamSpec],
+    mode: str,
+    kpoints_style: str,
+    mem_specs: list[MemSpec] | None = None,
 ) -> str:
     """Render the effective sweep back into parameters-file text.
 
-    ``setup`` writes this into the benchmark root so ``report`` can recover the
-    sweep, mode and baseline without a separate JSON manifest.
+    ``setup`` writes this into the benchmark root so ``report`` (and ``submit``,
+    for the memory table) can recover the sweep, mode and baseline without a
+    separate JSON manifest.
     """
     lines = [f"mode = {mode}", f"kpoints_style = {kpoints_style}", ""]
     for s in specs:
         prefix = "KPOINTS" if s.target == KPOINTS else f"INCAR {s.key}"
         lines.append(f"{prefix} = {', '.join(s.values)}")
+    for m in mem_specs or []:
+        lines.append(f"mem_per_cpu from {m.driver} = {', '.join(m.values)}")
     return "\n".join(lines) + "\n"
 
 
