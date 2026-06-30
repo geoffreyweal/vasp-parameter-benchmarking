@@ -77,7 +77,7 @@ INCAR SIGMA = 0.05, 0.1, 0.2
 KPOINTS      = 1x1x1
 
 # optional: more memory for the heavier configs (applied by `submit`)
-mem_per_cpu from ENCUT = 2G, 2G, 4G, 4G, 6G
+mem_per_cpu from ENCUT = 2G, 4G, 6G, 8G, 8G
 ```
 
 - `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Add a new parameter by
