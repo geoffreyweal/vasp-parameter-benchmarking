@@ -34,6 +34,7 @@ The tool runs in three parts, plus an optional cleanup step.
 | `setup`  | Generate one benchmark directory per parameter combination. |
 | `submit` | `sbatch` every generated job (submit.sl as written by `setup`). |
 | `report` | Collect convergence + cost into CSV + HTML. |
+| `status` | Re-scan folders and refresh `folder_index.html` (run/running/failed/pending). |
 | `clean`  | Delete bulky VASP outputs once you're done. |
 
 ### Part 1 — `setup`: create the benchmarking files
@@ -137,10 +138,25 @@ VASP_Parameter_Benchmarking/folder_index.html
 ```
 
 Open it in a browser and pick a value for each parameter from the dropdowns; it
-lists the matching folder number(s) and whether each has been run. Leave any
-parameter on **(any)** to not constrain it — e.g. ENCUT=600 with KPOINTS on
-**(any)** lists every folder at ENCUT=600. A full table of every folder and its
-values is shown below the selectors.
+lists the matching folder number(s) and each one's status — **✓ run**,
+**⏳ running**, **✗ failed**, or **— pending**. Leave any parameter on **(any)**
+to not constrain it — e.g. ENCUT=600 with KPOINTS on **(any)** lists every folder
+at ENCUT=600. A full table of every folder and its values is shown below the
+selectors.
+
+**The page is a snapshot, not live.** A browser opening a local file can't
+re-scan your folders or query SLURM, so the statuses are frozen at the moment the
+file was written (the page shows a *"Status as of …"* timestamp). As jobs
+progress, refresh it with:
+
+```bash
+vasp-parameter-benchmarking status   # re-scan + rewrite folder_index.html
+```
+
+This is quick — it only re-scans and rewrites the navigator (no CSV/plots).
+`report` also refreshes it as part of collecting results. `status` uses `sacct`
+to tell a *running* job from a *failed* one; pass `--no-sacct` to skip that (a
+launched job with no result then shows as failed).
 
 > To benchmark `KSPACING`, sweep it as an INCAR tag
 > (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit the KPOINTS file** from

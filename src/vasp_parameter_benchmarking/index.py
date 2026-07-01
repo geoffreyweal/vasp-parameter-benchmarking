@@ -16,15 +16,18 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import datetime
 from pathlib import Path
 
 from . import incar as incar_mod
 from . import kpoints as kpoints_mod
 from . import sacct
 from .outcar import final_energy
-from .parameters import INCAR, KPOINTS, ParamSpec
+from .parameters import INCAR, KPOINTS, ParamSpec, parse_parameters_file
 
 INDEX_FILENAME = "folder_index.html"
+# The sweep file 'setup' writes into the benchmark root (needed to re-scan later).
+PARAMETERS_FILENAME = "vasp_parameter_benchmarking_parameters.txt"
 
 # Per-status display text and CSS class, shared by the table and the result chips.
 STATUS_TEXT = {
@@ -129,8 +132,15 @@ def scan_configs(
     return entries
 
 
-def build_index_html(entries: list[dict], specs: list[ParamSpec]) -> str:
-    """Build the self-contained navigator HTML (dropdowns -> folder number)."""
+def build_index_html(
+    entries: list[dict], specs: list[ParamSpec], generated_at: str | None = None
+) -> str:
+    """Build the self-contained navigator HTML (dropdowns -> folder number).
+
+    ``generated_at`` stamps the page with when it was scanned; since the page is a
+    static snapshot (a browser opening a local file cannot re-scan the folders),
+    this tells the reader how fresh it is.
+    """
     keys = [s.key for s in specs]
     kinds = {s.key: s.target for s in specs}
     # Dropdown options per key, in the spec's declared order.
@@ -169,12 +179,22 @@ def build_index_html(entries: list[dict], specs: list[ParamSpec]) -> str:
     table_rows = "\n".join(rows)
     status_text_json = json.dumps(STATUS_TEXT)
 
+    asof_html = (
+        f'<p class="asof">Status as of <b>{esc(generated_at)}</b> — this page is a '
+        "snapshot; re-run <code>vasp-parameter-benchmarking status</code> "
+        "(or <code>report</code>) to refresh.</p>"
+        if generated_at
+        else ""
+    )
+
     return f"""<style>
   :root {{ --fg:#222; --muted:#667; --accent:#2c7fb8; --line:#e2e4e8; }}
   body {{ font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--fg);
           margin: 0; padding: 28px 32px; background: #fafafb; }}
   h1 {{ font-size: 20px; margin: 0 0 4px; }}
-  p.lead {{ color: var(--muted); margin: 0 0 22px; }}
+  p.lead {{ color: var(--muted); margin: 0 0 8px; }}
+  p.asof {{ color: var(--muted); font-size: 12px; margin: 0 0 22px; }}
+  p.asof code {{ font-size: 11px; background: #eef1f4; padding: 1px 5px; border-radius: 4px; }}
   .panel {{ background: #fff; border: 1px solid var(--line); border-radius: 10px;
             padding: 20px; margin-bottom: 22px; }}
   .selectors {{ display: flex; flex-wrap: wrap; gap: 16px; }}
@@ -208,6 +228,7 @@ def build_index_html(entries: list[dict], specs: list[ParamSpec]) -> str:
 <p class="lead">Pick a value for each parameter to find the numbered folder(s) that hold that variation.
 Leave a parameter on <b>(any)</b> to not constrain it. The folder's own INCAR/KPOINTS are the
 definition; folder numbers are just labels.</p>
+{asof_html}
 
 <div class="panel">
   <div class="selectors">
@@ -266,6 +287,17 @@ lookup();
 """
 
 
+def _scan_and_write(
+    root_dir: Path, specs: list[ParamSpec], use_sacct: bool
+) -> tuple[Path, list[dict]]:
+    """Scan ``root`` and write the navigator, stamped with the scan time."""
+    entries = scan_configs(root_dir, specs, use_sacct=use_sacct)
+    out_path = root_dir / INDEX_FILENAME
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    out_path.write_text(build_index_html(entries, specs, generated_at=generated_at))
+    return out_path, entries
+
+
 def write_index(
     root_dir: Path, specs: list[ParamSpec], use_sacct: bool = True
 ) -> Path:
@@ -274,7 +306,26 @@ def write_index(
     ``use_sacct`` lets the navigator query SLURM to tell a still-running job
     apart from a failed one; set it False to rely only on local files.
     """
-    entries = scan_configs(root_dir, specs, use_sacct=use_sacct)
-    out_path = root_dir / INDEX_FILENAME
-    out_path.write_text(build_index_html(entries, specs))
+    out_path, _entries = _scan_and_write(root_dir, specs, use_sacct)
     return out_path
+
+
+def refresh_index(root_dir: str | Path, use_sacct: bool = True) -> tuple[Path, list[dict]]:
+    """Re-scan ``root`` and rewrite the navigator, using the recorded sweep.
+
+    Loads the sweep from ``root``'s parameters file (written by ``setup``) so it
+    can run standalone - no CSV/plots, just a fresh folder_index.html reflecting
+    the folders' current run/running/failed/pending state. Returns
+    ``(path, entries)`` so callers can summarise the counts.
+    """
+    root_dir = Path(root_dir)
+    if not root_dir.is_dir():
+        raise FileNotFoundError(f"benchmark root not found: {root_dir}")
+    params_path = root_dir / PARAMETERS_FILENAME
+    if not params_path.is_file():
+        raise FileNotFoundError(
+            f"parameters file not found: {params_path}\n"
+            "Run 'setup' first, or check --root."
+        )
+    specs, _settings, _mem_specs = parse_parameters_file(params_path)
+    return _scan_and_write(root_dir, specs, use_sacct=use_sacct)

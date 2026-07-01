@@ -5,6 +5,7 @@ Subcommands:
   vasp-parameter-benchmarking setup   - Part 1: create one dir per parameter combo.
   vasp-parameter-benchmarking submit  - Part 2: submit all jobs to SLURM.
   vasp-parameter-benchmarking report  - Part 3: collect convergence + cost results.
+  vasp-parameter-benchmarking status  - re-scan folders + refresh folder_index.html.
   vasp-parameter-benchmarking clean   - delete bulky outputs, keep inputs + results.
 """
 
@@ -117,6 +118,22 @@ def build_parser() -> argparse.ArgumentParser:
         "run's timing average (default 5).",
     )
 
+    # ---- status ----------------------------------------------------------
+    p_status = sub.add_parser(
+        "status",
+        help="Re-scan folders and refresh folder_index.html (run/running/failed/"
+        "pending), printing a summary. Run this to bring the navigator up to date.",
+    )
+    p_status.add_argument(
+        "--root", default="VASP_Parameter_Benchmarking", help="Benchmark root directory."
+    )
+    p_status.add_argument(
+        "--no-sacct",
+        action="store_true",
+        help="Skip sacct queries (a launched job with no result then shows as "
+        "failed rather than running).",
+    )
+
     # ---- clean -----------------------------------------------------------
     p_clean = sub.add_parser(
         "clean",
@@ -168,6 +185,19 @@ def main(argv: list[str] | None = None) -> int:
                 skip_steps=args.skip_steps,
                 parameters_file=args.parameters,
             )
+        elif args.command == "status":
+            from .index import STATUS_TEXT, refresh_index
+
+            out_path, entries = refresh_index(args.root, use_sacct=not args.no_sacct)
+            counts: dict[str, int] = {}
+            for e in entries:
+                counts[e["status"]] = counts.get(e["status"], 0) + 1
+            order = ["done", "running", "failed", "pending"]
+            summary = ", ".join(
+                f"{counts.get(k, 0)} {STATUS_TEXT[k].split(' ', 1)[-1]}" for k in order
+            )
+            print(f"Refreshed {out_path}")
+            print(f"{len(entries)} folder(s): {summary}")
         elif args.command == "clean":
             from .clean import clean
 
