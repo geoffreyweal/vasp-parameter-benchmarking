@@ -46,16 +46,19 @@ VASP_Files/
 ├── INCAR      # required
 ├── POSCAR     # required
 ├── POTCAR     # required
-├── KPOINTS    # required (unless you only sweep INCAR with KSPACING)
+├── KPOINTS    # keep ONE KPOINTS to not sweep it (omit if using KSPACING) ...
+├── KPOINTS_1  # ... OR provide KPOINTS_1, KPOINTS_2, ... to sweep over them
+├── KPOINTS_2
 ├── submit.sl  # required — copied into every job (verbatim, bar --job-name/--mem-per-cpu)
 └── ...         # any extras (ML_FF, WAVECAR, CHGCAR, …) are copied too
 ```
 
 Every file in `VASP_Files/` is copied into each benchmark directory **unchanged**,
 including your `submit.sl`. The tool then edits **only** the parameters you sweep:
-it sets the relevant `INCAR` tags and, if you sweep the k-point grid, writes a
-fresh `KPOINTS` file. Your base `INCAR`/`KPOINTS` stay ordinary single-value
-files; the sweep lives in the parameters file. (The only edits ever made to
+it sets the relevant `INCAR` tags, and each config gets its assigned
+`KPOINTS_<n>` copied in as `KPOINTS`. Your base `INCAR` stays an ordinary
+single-value file; the INCAR sweep lives in the parameters file, and the KPOINTS
+sweep lives in the `KPOINTS_<n>` files themselves. (The only edits ever made to
 `submit.sl` are the `--job-name` directive — set to `vasp-para-bench-<folder>` by
 default, disable with `--no-name-jobs` — and `--mem-per-cpu`, if you add a
 `mem_per_cpu` table; see below.)
@@ -64,9 +67,9 @@ default, disable with `--no-name-jobs` — and `--mem-per-cpu`, if you add a
 
 #### Choosing what to sweep — `vasp_parameter_benchmarking_parameters.txt`
 
-Describe the sweep in a parameters file (default
+**INCAR tags** are swept via a parameters file (default
 `vasp_parameter_benchmarking_parameters.txt`, or pass `--parameters`). One line
-per swept thing, plus optional run settings (like `mode`) at the top:
+per swept tag, plus optional run settings (like `mode`) at the top:
 
 ```text
 # run settings
@@ -75,31 +78,36 @@ mode = grid
 # what to sweep — one line each
 INCAR ENCUT = 300, 400, 500, 600, 700
 INCAR SIGMA = 0.05, 0.1, 0.2
-KPOINTS      = 1x1x1
 
-# optional: more memory for the heavier configs (applied by `submit`)
+# optional: more memory for the heavier configs (applied by `setup`)
 mem_per_cpu from ENCUT = 2G, 4G, 6G, 8G, 8G
 ```
+
+**KPOINTS** is swept with **files, not lines**: put `KPOINTS_1`, `KPOINTS_2`, …
+in `VASP_Files/` and `setup` sweeps over them automatically (a single plain
+`KPOINTS` means it is not swept and is copied unchanged). Since you author the
+files yourself, *any* KPOINTS format works — automatic mesh, Monkhorst-Pack,
+line mode, explicit lists. Each config's copy is verbatim except the first
+(comment) line, which is tagged with its label (e.g. `KPOINTS_2 (…)`) so the
+report and navigator can identify it; VASP ignores that line.
 
 - `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Add a new parameter by
   adding a line; nothing in the tool is hard-coded to specific tags. Values are
   written verbatim, so `INCAR LREAL = .FALSE., Auto` works too.
-- `KPOINTS = g1, g2, ...` — sweep the k-point grid, each grid written `n1xn2xn3`.
-  Grids become Gamma-centred `KPOINTS` files (set `kpoints_style = monkhorst`, or
-  pass `--kpoints-style`, to switch).
 - `mem_per_cpu from <KEY> = m1, m2, ...` — request more SLURM memory for the
-  heavier configs (e.g. higher `ENCUT` or denser `KPOINTS`). Give one
+  heavier configs (e.g. higher `ENCUT` or a denser `KPOINTS_<n>`). Give one
   `--mem-per-cpu` value per value of the driving parameter, lined up by position
-  (`2G`, `512M`, or a bare number in MB). It is **not** a sweep axis — it creates
+  (`2G`, `512M`, or a bare number in MB); `mem_per_cpu from KPOINTS = 6G, 2G`
+  lines up with `KPOINTS_1, KPOINTS_2`. It is **not** a sweep axis — it creates
   no extra folders. `setup` writes the chosen value into each config's
   `#SBATCH --mem-per-cpu` line (adding one if your `submit.sl` has none), so each
   folder is self-contained. List several lines (e.g. one keyed to `ENCUT`, one to
   `KPOINTS`) and the **greatest** value wins for each config.
 - `mode = grid | oat` — see below. A CLI `--mode` overrides it.
 
-You can also (or instead) pass sweeps on the command line — `--incar
-"ENCUT=400,500,600"` (repeatable) and `--kpoints "2x2x2,4x4x4"`. CLI flags and
-the file are merged (CLI wins for a repeated tag).
+You can also (or instead) pass INCAR sweeps on the command line — `--incar
+"ENCUT=400,500,600"` (repeatable). CLI flags and the file are merged (CLI wins
+for a repeated tag).
 
 ```bash
 vasp-parameter-benchmarking setup        # reads the parameters file
@@ -108,8 +116,9 @@ vasp-parameter-benchmarking setup --incar "ENCUT=400,500,600" --mode oat
 
 > **List your existing/default value first.** In `oat` mode the first value of
 > each parameter is the centre the others are varied around, and listing the
-> value already in your base `INCAR`/`KPOINTS` first keeps later additive runs
-> lined up (see *Adding a parameter later*).
+> value already in your base `INCAR` first keeps later additive runs lined up
+> (see *Adding a parameter later*). The same goes for KPOINTS: `KPOINTS_1` is
+> the baseline, so make it your default/most-trusted variation.
 >
 > **No separate manifest.** The generated `INCAR`/`KPOINTS` in each config dir
 > *are* the record — `report` reads each config's actual values straight from
@@ -144,13 +153,19 @@ to not constrain it — e.g. ENCUT=600 with KPOINTS on **(any)** lists every fol
 at ENCUT=600. A full table of every folder and its values is shown below the
 selectors.
 
-**The page is a snapshot, not live.** A browser opening a local file can't
-re-scan your folders or query SLURM, so the statuses are frozen at the moment the
-file was written (the page shows a *"Status as of …"* timestamp). As jobs
-progress, refresh it with:
+**The page is a snapshot, not live — pressing refresh in your browser does
+nothing.** When you open `folder_index.html` from disk (a `file://` page), the
+browser security model forbids that page from re-scanning your folders or
+querying SLURM. The statuses are baked into the file when it is written, so
+reloading the tab just re-loads the same frozen data. The page shows a
+*"Status as of …"* timestamp so you can see how old it is.
+
+To bring it up to date you must **regenerate the file first, then refresh the
+tab**:
 
 ```bash
-vasp-parameter-benchmarking status   # re-scan + rewrite folder_index.html
+vasp-parameter-benchmarking status   # re-scan folders + rewrite folder_index.html
+# then hit refresh in the browser — now it reflects what has run
 ```
 
 This is quick — it only re-scans and rewrites the navigator (no CSV/plots).
@@ -158,9 +173,15 @@ This is quick — it only re-scans and rewrites the navigator (no CSV/plots).
 to tell a *running* job from a *failed* one; pass `--no-sacct` to skip that (a
 launched job with no result then shows as failed).
 
+**Want a truly live view where refresh alone updates it?** That requires serving
+the page from a small local process (so each refresh re-scans) rather than opening
+it from disk — it is not possible for a plain `file://` page. Not currently built
+in; ask if you'd like a `browse`/server command added.
+
 > To benchmark `KSPACING`, sweep it as an INCAR tag
-> (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit the KPOINTS file** from
-> `VASP_Files/` — VASP uses `KSPACING` only when no `KPOINTS` file is present.
+> (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit all KPOINTS files**
+> (`KPOINTS` and `KPOINTS_<n>`) from `VASP_Files/` — VASP uses `KSPACING` only
+> when no `KPOINTS` file is present.
 
 #### Adding a parameter later (incremental studies)
 

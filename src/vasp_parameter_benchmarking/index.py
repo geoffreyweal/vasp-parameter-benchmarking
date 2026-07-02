@@ -39,13 +39,20 @@ STATUS_TEXT = {
 
 
 def read_assignment(run_dir: Path, specs: list[ParamSpec]) -> dict[str, str | None]:
-    """Read each swept parameter's actual value from this folder's input files."""
+    """Read each swept parameter's actual value from this folder's input files.
+
+    KPOINTS is identified by the ``KPOINTS_<n>`` label ``setup`` tagged onto the
+    copied file's comment line; the automatic-mesh grid is a fallback for trees
+    made by older versions (which recorded grids like ``4x4x4``).
+    """
     values: dict[str, str | None] = {}
     for s in specs:
         if s.target == INCAR:
             values[s.key] = incar_mod.read_tag(run_dir / "INCAR", s.key)
         elif s.target == KPOINTS:
-            values[s.key] = kpoints_mod.read_grid(run_dir / "KPOINTS")
+            values[s.key] = kpoints_mod.read_label(
+                run_dir / "KPOINTS"
+            ) or kpoints_mod.read_grid(run_dir / "KPOINTS")
     return values
 
 
@@ -155,7 +162,7 @@ def build_index_html(
 
     selectors = []
     for s in specs:
-        label = "KPOINTS grid" if s.target == KPOINTS else f"INCAR {s.key}"
+        label = "KPOINTS file" if s.target == KPOINTS else f"INCAR {s.key}"
         # An "(any)" choice (selected by default) leaves that parameter unconstrained.
         opts = '<option value="__any__" selected>(any)</option>'
         opts += "".join(f'<option value="{esc(v)}">{esc(v)}</option>' for v in options[s.key])

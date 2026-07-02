@@ -1,23 +1,28 @@
 """Parsing of parameter-sweep specifications and expansion into configurations.
 
-A *parameter spec* says "vary this INCAR tag (or the KPOINTS grid) over these
-values". Specs come from two places, which are merged (CLI wins on a clash):
+A *parameter spec* says "vary this INCAR tag (or the KPOINTS file) over these
+values". INCAR specs come from two places, which are merged (CLI wins on a
+clash):
 
-  * CLI flags - ``--incar "ENCUT=300,400,500"`` (repeatable) and
-    ``--kpoints "2x2x2,4x4x4,6x6x6"``;
+  * CLI flags - ``--incar "ENCUT=300,400,500"`` (repeatable);
   * a parameters file (``--parameters``), one spec per line::
 
         # vasp_parameter_benchmarking_parameters.txt
         INCAR ENCUT = 300, 400, 500, 600, 700
         INCAR SIGMA = 0.05, 0.1, 0.2
-        KPOINTS      = 2x2x2, 4x4x4, 6x6x6, 8x8x8
+
+KPOINTS is different: its variations are **files you provide** in
+``VASP_Files/`` - ``KPOINTS_1``, ``KPOINTS_2``, ... - and ``setup`` detects
+them and builds the KPOINTS spec from the file labels itself (a single plain
+``KPOINTS`` means it is not swept). The ``KPOINTS = KPOINTS_1, KPOINTS_2``
+line found in the *recorded* parameters file is written by ``setup``, not by
+you, so ``report``/``status`` know the sweep and its order.
 
 A run-level ``mode`` setting may sit at the top of the parameters file::
 
     mode = oat
 
     INCAR ENCUT = 300, 400, 500
-    KPOINTS      = 2x2x2, 4x4x4
 
 A ``mem_per_cpu from <KEY>`` line requests more SLURM memory for the heavier
 configs - one ``--mem-per-cpu`` value per value of the driving parameter, lined
@@ -35,9 +40,9 @@ of two modes:
   * ``oat``  - one-at-a-time: a baseline (the first value of every spec) plus,
     for each spec, every other value with the rest held at baseline.
 
-For convergence studies put the value you trust most (highest ENCUT, densest
-KPOINTS) *first* in each list: it becomes the baseline that the other specs are
-held at, and the per-parameter reference in the report.
+For convergence studies put the value you trust most (highest ENCUT) *first* in
+each list - and make ``KPOINTS_1`` your densest/most-trusted grid - since the
+first value is the baseline the other specs are held at in ``oat`` mode.
 """
 
 from __future__ import annotations
@@ -45,7 +50,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .kpoints import kpoint_count, parse_grid
+from .kpoints import LABEL_RE, kpoint_count
 
 # Targets a spec can edit.
 INCAR = "INCAR"
@@ -110,12 +115,24 @@ def parse_mem_mb(text: str) -> float:
     return mb
 
 
-def validate_mem_specs(specs: list[ParamSpec], mem_specs: list[MemSpec]) -> None:
-    """Check every MemSpec names a swept parameter and aligns 1:1 with its values."""
+def validate_mem_specs(
+    specs: list[ParamSpec],
+    mem_specs: list[MemSpec],
+    allow_unknown_driver: bool = False,
+) -> None:
+    """Check every MemSpec names a swept parameter and aligns 1:1 with its values.
+
+    ``allow_unknown_driver`` skips drivers not (yet) in ``specs`` - used when
+    parsing a user-authored file, where the KPOINTS spec only appears later,
+    once ``setup`` has detected the ``KPOINTS_<n>`` files. ``setup`` re-validates
+    strictly after that merge.
+    """
     by_key = {s.key: s for s in specs}
     for m in mem_specs:
         drv = by_key.get(m.driver)
         if drv is None:
+            if allow_unknown_driver:
+                continue
             raise ValueError(
                 f"mem_per_cpu refers to '{m.driver}', which is not a swept parameter"
             )
@@ -147,14 +164,17 @@ def parse_cli_incar(spec: str) -> ParamSpec:
     return ParamSpec(INCAR, key, values)
 
 
-def parse_cli_kpoints(spec: str) -> ParamSpec:
-    """Parse a ``--kpoints`` flag value like ``"2x2x2,4x4x4,6x6x6"``."""
-    values = _split_values(spec)
-    if not values:
-        raise ValueError(f"invalid --kpoints {spec!r}: no grids given")
-    for v in values:  # validate every grid up front
-        parse_grid(v)
-    return ParamSpec(KPOINTS, KPOINTS, values)
+def kpoints_spec_from_labels(labels: list[str]) -> ParamSpec:
+    """Build the KPOINTS spec from file labels (``KPOINTS_1``, ``KPOINTS_2``, ...)."""
+    if not labels:
+        raise ValueError("no KPOINTS labels given")
+    for v in labels:
+        if not LABEL_RE.match(v):
+            raise ValueError(
+                f"invalid KPOINTS value {v!r}: expected a file label like 'KPOINTS_1' "
+                "(KPOINTS variations are files in VASP_Files/, named KPOINTS_1, KPOINTS_2, ...)"
+            )
+    return ParamSpec(KPOINTS, KPOINTS, labels)
 
 
 def parse_parameters_file(
@@ -164,15 +184,17 @@ def parse_parameters_file(
 
     Each non-blank, non-comment line is one of::
 
-        mode = grid | oat              # run-level settings (mode, kpoints_style)
-        INCAR <TAG> = v1, v2, ...       # sweep an INCAR tag
-        KPOINTS      = g1, g2, ...      # sweep the KPOINTS grid
-        mem_per_cpu from <KEY> = m1, m2 # --mem-per-cpu per value of <KEY>
+        mode = grid | oat                  # run-level settings
+        INCAR <TAG> = v1, v2, ...           # sweep an INCAR tag
+        KPOINTS      = KPOINTS_1, KPOINTS_2 # written by setup: swept KPOINTS files
+        mem_per_cpu from <KEY> = m1, m2     # --mem-per-cpu per value of <KEY>
 
     (``#`` starts a comment, either whole-line or trailing.) Settings are
     returned as a dict; spec lines as a list of :class:`ParamSpec`; any
     ``mem_per_cpu`` lines as a list of :class:`MemSpec` (validated to line up
-    with their driving parameter).
+    with their driving parameter). The KPOINTS line is not user-authored - the
+    sweep comes from ``KPOINTS_<n>`` files in ``VASP_Files/`` and ``setup``
+    records their labels here - so its values must be labels, not grids.
     """
     p = Path(path)
     if not p.is_file():
@@ -199,7 +221,10 @@ def parse_parameters_file(
         if target == KPOINTS:
             if len(tokens) != 1:
                 raise ValueError(f"{p}:{lineno}: KPOINTS takes no tag name, got {raw!r}")
-            specs.append(parse_cli_kpoints(rhs))
+            try:
+                specs.append(kpoints_spec_from_labels(_split_values(rhs)))
+            except ValueError as exc:
+                raise ValueError(f"{p}:{lineno}: {exc}") from None
         elif target == INCAR:
             if len(tokens) != 2:
                 raise ValueError(
@@ -233,7 +258,9 @@ def parse_parameters_file(
             f"{p}: invalid mode {settings['mode']!r}; use one of {', '.join(VALID_MODES)}"
         )
     try:
-        validate_mem_specs(specs, mem_specs)
+        # Lenient on unknown drivers: the KPOINTS spec may only be added later,
+        # from the KPOINTS_<n> files; setup re-validates strictly after that.
+        validate_mem_specs(specs, mem_specs, allow_unknown_driver=True)
     except ValueError as exc:
         raise ValueError(f"{p}: {exc}") from None
     return specs, settings, mem_specs
@@ -242,16 +269,15 @@ def parse_parameters_file(
 def render_parameters_file(
     specs: list[ParamSpec],
     mode: str,
-    kpoints_style: str,
     mem_specs: list[MemSpec] | None = None,
 ) -> str:
     """Render the effective sweep back into parameters-file text.
 
-    ``setup`` writes this into the benchmark root so ``report`` (and ``submit``,
-    for the memory table) can recover the sweep, mode and baseline without a
-    separate JSON manifest.
+    ``setup`` writes this into the benchmark root so ``report``/``status`` can
+    recover the sweep, mode and baseline without a separate JSON manifest. Any
+    KPOINTS spec is recorded as its file labels (``KPOINTS_1, KPOINTS_2, ...``).
     """
-    lines = [f"mode = {mode}", f"kpoints_style = {kpoints_style}", ""]
+    lines = [f"mode = {mode}", ""]
     for s in specs:
         prefix = "KPOINTS" if s.target == KPOINTS else f"INCAR {s.key}"
         lines.append(f"{prefix} = {', '.join(s.values)}")
@@ -293,7 +319,10 @@ def build_configs(specs: list[ParamSpec], mode: str) -> list[dict[str, str]]:
     The returned assignments are de-duplicated while preserving order.
     """
     if not specs:
-        raise ValueError("no parameters to sweep; pass --incar/--kpoints or --parameters")
+        raise ValueError(
+            "no parameters to sweep; pass --incar/--parameters or add "
+            "KPOINTS_1, KPOINTS_2, ... files to VASP_Files/"
+        )
 
     if mode == "grid":
         assignments = [dict()]
@@ -322,11 +351,18 @@ def build_configs(specs: list[ParamSpec], mode: str) -> list[dict[str, str]]:
 def numeric_value(spec: ParamSpec, value: str) -> float | None:
     """A numeric x-coordinate for plotting, or None if the value isn't numeric.
 
-    KPOINTS grids map to their total k-point count (n1 x n2 x n3); INCAR tags
-    map to ``float(value)`` when possible.
+    KPOINTS file labels map to their number (``KPOINTS_2`` -> 2), so the report
+    orders points by file index; old-style grid values (``4x4x4``) fall back to
+    their total k-point count. INCAR tags map to ``float(value)`` when possible.
     """
     if spec.target == KPOINTS:
-        return float(kpoint_count(value))
+        m = LABEL_RE.match(value.strip())
+        if m:
+            return float(m.group(1))
+        try:
+            return float(kpoint_count(value))
+        except ValueError:
+            return None
     try:
         return float(value)
     except ValueError:

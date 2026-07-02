@@ -15,7 +15,6 @@ import argparse
 import sys
 
 from . import __version__
-from .kpoints import GAMMA, MONKHORST
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,16 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
         "multiple tags. List the value you trust most first.",
     )
     p_setup.add_argument(
-        "--kpoints",
-        metavar="g1,g2,...",
-        help='Sweep the KPOINTS grid, e.g. "2x2x2,4x4x4,6x6x6,8x8x8".',
-    )
-    p_setup.add_argument(
         "--parameters",
         help="Parameters file (default: vasp_parameter_benchmarking_parameters.txt "
-        "if present). One spec per line: 'INCAR <TAG> = v1, v2' or 'KPOINTS = g1, g2'. "
-        "Optionally 'mem_per_cpu from <KEY> = m1, m2' to request more memory for "
-        "heavier configs (applied by 'submit', greatest wins).",
+        "if present). One spec per line: 'INCAR <TAG> = v1, v2'. Optionally "
+        "'mem_per_cpu from <KEY> = m1, m2' to request more memory for heavier "
+        "configs (written into each submit.sl, greatest wins). To sweep KPOINTS, "
+        "put KPOINTS_1, KPOINTS_2, ... files in the VASP inputs directory "
+        "(a single plain KPOINTS is copied unchanged, not swept).",
     )
     p_setup.add_argument(
         "--mode",
@@ -58,13 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="grid = every combination of values (Cartesian product); "
         "oat = one-at-a-time from a baseline (the first value of each). "
         "Overrides 'mode' in the parameters file; defaults to grid.",
-    )
-    p_setup.add_argument(
-        "--kpoints-style",
-        choices=[GAMMA, MONKHORST],
-        default=None,
-        help="Centring for generated KPOINTS grids. Overrides the parameters "
-        "file; defaults to gamma.",
     )
     p_setup.add_argument("--vasp-files", default="VASP_Files", help="Directory of VASP inputs.")
     p_setup.add_argument(
@@ -157,10 +146,8 @@ def main(argv: list[str] | None = None) -> int:
 
             setup(
                 incar_flags=args.incar,
-                kpoints_flag=args.kpoints,
                 parameters_file=args.parameters,
                 mode=args.mode,
-                kpoints_style=args.kpoints_style,
                 vasp_files=args.vasp_files,
                 submit=args.submit,
                 root=args.root,
@@ -196,8 +183,8 @@ def main(argv: list[str] | None = None) -> int:
             summary = ", ".join(
                 f"{counts.get(k, 0)} {STATUS_TEXT[k].split(' ', 1)[-1]}" for k in order
             )
-            print(f"Refreshed {out_path}")
-            print(f"{len(entries)} folder(s): {summary}")
+            print(f"Rewrote {out_path} ({len(entries)} folder(s): {summary}).")
+            print("Refresh the page in your browser to see the updated statuses.")
         elif args.command == "clean":
             from .clean import clean
 

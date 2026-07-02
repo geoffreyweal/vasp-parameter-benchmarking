@@ -148,7 +148,7 @@ def _figure_payload(df: pd.DataFrame, specs: list[ParamSpec]) -> dict:
             {
                 "key": key,
                 "isKpoints": spec.target == KPOINTS,
-                "title": f"total k-points ({key} grid)" if spec.target == KPOINTS else key,
+                "title": "KPOINTS file" if spec.target == KPOINTS else key,
                 "values": [str(v) for v in spec.values],
                 "numeric": bool(numeric),
             }
