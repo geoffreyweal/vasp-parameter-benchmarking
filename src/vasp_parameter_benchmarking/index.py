@@ -4,8 +4,8 @@ Config directories are named only by number (``001``, ``002``, ...); the
 ``INCAR``/``KPOINTS`` inside each directory define what it is. This module reads
 those files back to learn each folder's swept-parameter values, and builds a
 self-contained HTML page where you pick a value per parameter and it tells you
-which numbered folder holds that variation (and whether it has run, is still
-running, failed, or is pending).
+which numbered folder holds that variation (and whether it completed, is still
+running, errored, failed, or is pending).
 
 The same value-reading/matching helpers drive ``setup``'s additive behaviour:
 re-running after adding a parameter reuses the folders that already exist and
@@ -22,7 +22,7 @@ from pathlib import Path
 from . import incar as incar_mod
 from . import kpoints as kpoints_mod
 from . import sacct
-from .outcar import final_energy
+from .outcar import error_signature, final_energy, run_completed
 from .parameters import INCAR, KPOINTS, ParamSpec, parse_parameters_file
 
 INDEX_FILENAME = "folder_index.html"
@@ -33,9 +33,25 @@ PARAMETERS_FILENAME = "vasp_parameter_benchmarking_parameters.txt"
 STATUS_TEXT = {
     "done": "✓ run",
     "running": "⏳ running",
+    "error": "✗ error",
     "failed": "✗ failed",
     "pending": "— pending",
 }
+
+# Error signatures SLURM / the MPI runtime print into slurm-<id>.out.
+_SLURM_ERROR_PATTERNS = (
+    "DUE TO TIME LIMIT",
+    "CANCELLED AT",
+    "Out Of Memory",
+    "oom-kill",
+    "oom_kill",
+    "srun: error",
+    "slurmstepd: error",
+    "Segmentation fault",
+    "BAD TERMINATION",
+    "Traceback (most recent call last)",
+    "forrtl: severe",
+)
 
 
 def read_assignment(run_dir: Path, specs: list[ParamSpec]) -> dict[str, str | None]:
@@ -90,49 +106,114 @@ def config_dirs(root_dir: Path) -> list[Path]:
     return sorted(dirs, key=lambda p: int(p.name))
 
 
-def run_status(run_dir: Path, use_sacct: bool = True) -> str:
-    """Classify a config folder as ``"done"``, ``"running"``, ``"failed"`` or ``"pending"``.
+def _error_evidence(run_dir: Path, use_sacct: bool) -> str | None:
+    """Why this run ended abnormally, or None if no error can be identified.
 
-    * **done** - the OUTCAR holds a final ``energy(sigma->0)`` (a usable result);
-    * **running** - launched with no result yet, and its SLURM job is still
-      active (running or queued) according to ``sacct``;
-    * **failed** - launched (an OUTCAR, OSZICAR or ``slurm-<id>.out`` is present)
-      but produced no final energy and is not still running: it crashed, was
-      killed, or timed out;
+    Checked in order: a VASP abort message near the end of the OUTCAR; the
+    SLURM job's terminal state via ``sacct`` (TIMEOUT, OUT_OF_MEMORY, ...);
+    error signatures in the newest ``slurm-<id>.out`` (a plain file in the run
+    directory - no scheduler query needed).
+    """
+    sig = error_signature(run_dir / "OUTCAR")
+    if sig:
+        return sig
+    if use_sacct:
+        state = sacct.error_state(run_dir)
+        if state:
+            return state
+    outs = sorted(
+        (p for p in run_dir.glob("slurm-*.out")),
+        key=lambda p: int(sacct._SLURM_OUT_RE.search(p.name).group(1)),
+    )
+    if outs:
+        text = outs[-1].read_text(errors="replace")
+        for pat in _SLURM_ERROR_PATTERNS:
+            if pat in text:
+                return pat
+    return None
+
+
+# A launched, incomplete run whose OUTCAR/OSZICAR was written to this recently
+# is treated as still running when sacct can't say. VASP writes at least once
+# per electronic step, so half an hour of silence means the job is dead (or a
+# single step takes >30 min, in which case it briefly shows as failed).
+ACTIVITY_WINDOW_S = 30 * 60
+
+
+def _recently_active(run_dir: Path) -> bool:
+    """Whether the run's output files were modified within ACTIVITY_WINDOW_S."""
+    import time
+
+    mtimes = [
+        p.stat().st_mtime for p in (run_dir / "OUTCAR", run_dir / "OSZICAR")
+        if p.is_file()
+    ]
+    return bool(mtimes) and (time.time() - max(mtimes)) < ACTIVITY_WINDOW_S
+
+
+def run_status(run_dir: Path, use_sacct: bool = True) -> tuple[str, str | None]:
+    """Classify a config folder; returns ``(status, detail)``.
+
+    * **done** - the OUTCAR ends with VASP's normal-termination timing footer
+      and holds a final ``energy(sigma->0)``: the calculation completed
+      successfully. (An energy alone is not enough - it appears after the
+      first SCF loop, long before a job finishes.)
+    * **running** - launched, not complete, and its SLURM job is still active
+      according to ``sacct``; without sacct, "output files written to within
+      the last :data:`ACTIVITY_WINDOW_S`" is used instead, so this works from
+      the folder contents alone;
+    * **error** - finished with an identifiable error; ``detail`` says what was
+      found (a VASP abort message in the OUTCAR, an abnormal SLURM terminal
+      state such as ``TIMEOUT``, or an error line in ``slurm-<id>.out``);
+    * **failed** - launched and not complete, not still running, but no
+      specific error could be identified (e.g. killed without a message);
     * **pending** - no sign the run has been launched yet (only input files).
 
-    When ``use_sacct`` is False (or ``sacct`` is unavailable / the job is no
-    longer known to it) a launched run with no result is reported as failed -
-    running and failed cannot be told apart without the scheduler.
+    ``detail`` is None for every status except ``error``. Everything except the
+    sacct refinement comes from files in the run directory, so the
+    classification works with ``use_sacct=False`` too.
     """
     outcar = run_dir / "OUTCAR"
-    if outcar.is_file() and final_energy(outcar) is not None:
-        return "done"
+    if (
+        outcar.is_file()
+        and run_completed(outcar)
+        and final_energy(outcar) is not None
+    ):
+        return "done", None
     started = (
         outcar.is_file()
         or (run_dir / "OSZICAR").is_file()
         or sacct.find_job_id(run_dir) is not None
     )
     if not started:
-        return "pending"
-    if use_sacct and sacct.is_running(run_dir):
-        return "running"
-    return "failed"
+        return "pending", None
+    # Is it still going? Prefer the scheduler's answer; fall back to recent
+    # write activity so the classification never depends on sacct being there.
+    active = sacct.is_running(run_dir) if use_sacct else None
+    if active is None:
+        active = _recently_active(run_dir)
+    if active:
+        return "running", None
+    detail = _error_evidence(run_dir, use_sacct)
+    if detail is not None:
+        return "error", detail
+    return "failed", None
 
 
 def scan_configs(
     root_dir: Path, specs: list[ParamSpec], use_sacct: bool = True
 ) -> list[dict]:
-    """Read every numbered folder into ``{folder, params, status, has_result}``."""
+    """Read every numbered folder into ``{folder, params, status, detail, has_result}``."""
     entries: list[dict] = []
     for d in config_dirs(root_dir):
         params = read_assignment(d, specs)
-        status = run_status(d, use_sacct=use_sacct)
+        status, detail = run_status(d, use_sacct=use_sacct)
         entries.append(
             {
                 "folder": d.name,
                 "params": params,
                 "status": status,
+                "detail": detail,
                 "has_result": status == "done",
             }
         )
@@ -179,6 +260,8 @@ def build_index_html(
         cells = "".join(f"<td>{esc(e['params'].get(k))}</td>" for k in keys)
         status_cls = e["status"]
         status = STATUS_TEXT[status_cls]
+        if e.get("detail"):
+            status += f" ({esc(e['detail'])})"
         rows.append(
             f'<tr><td class="num">{esc(e["folder"])}</td>{cells}'
             f'<td class="{status_cls}">{status}</td></tr>'
@@ -220,6 +303,7 @@ def build_index_html(
   .chip .st {{ font-size: 11px; }}
   .status-done {{ color: #2ca25f; font-weight: 600; }}
   .status-running {{ color: #2c7fb8; font-weight: 600; }}
+  .status-error {{ color: #c0392b; font-weight: 600; }}
   .status-failed {{ color: #c0392b; font-weight: 600; }}
   .status-pending {{ color: #d08000; font-weight: 600; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
@@ -227,7 +311,7 @@ def build_index_html(
   th {{ color: var(--muted); font-weight: 600; }}
   td.num {{ font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }}
   td.done {{ color: #2ca25f; }} td.running {{ color: #2c7fb8; }}
-  td.failed {{ color: #c0392b; }} td.pending {{ color: #999; }}
+  td.error {{ color: #c0392b; }} td.failed {{ color: #c0392b; }} td.pending {{ color: #999; }}
   .wrap {{ overflow-x: auto; }}
 </style>
 
@@ -281,7 +365,8 @@ function lookup() {{
     return;
   }}
   const chips = hits.map(h => {{
-    const st = '<span class="st status-' + h.status + '">' + STATUS_TEXT[h.status] + '</span>';
+    const label = STATUS_TEXT[h.status] + (h.detail ? " (" + h.detail + ")" : "");
+    const st = '<span class="st status-' + h.status + '">' + label + '</span>';
     return '<span class="chip"><span class="folder">' + h.folder + '</span>' + st + '</span>';
   }}).join("");
   const noun = hits.length === 1 ? "folder matches" : "folders match";

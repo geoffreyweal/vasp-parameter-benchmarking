@@ -110,8 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- status ----------------------------------------------------------
     p_status = sub.add_parser(
         "status",
-        help="Re-scan folders and refresh folder_index.html (run/running/failed/"
-        "pending), printing a summary. Run this to bring the navigator up to date.",
+        help="Re-scan folders and refresh folder_index.html (run/running/error/"
+        "failed/pending), printing a summary. Run this to bring the navigator "
+        "up to date.",
     )
     p_status.add_argument(
         "--root", default="VASP_Parameter_Benchmarking", help="Benchmark root directory."
@@ -119,8 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument(
         "--no-sacct",
         action="store_true",
-        help="Skip sacct queries (a launched job with no result then shows as "
-        "failed rather than running).",
+        help="Skip sacct queries; 'running' is then inferred from recent "
+        "output-file activity instead of the scheduler.",
     )
 
     # ---- clean -----------------------------------------------------------
@@ -179,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             counts: dict[str, int] = {}
             for e in entries:
                 counts[e["status"]] = counts.get(e["status"], 0) + 1
-            order = ["done", "running", "failed", "pending"]
+            order = ["done", "running", "error", "failed", "pending"]
             summary = ", ".join(
                 f"{counts.get(k, 0)} {STATUS_TEXT[k].split(' ', 1)[-1]}" for k in order
             )

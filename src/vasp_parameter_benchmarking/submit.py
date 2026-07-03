@@ -11,7 +11,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from .outcar import final_energy
+from . import index as index_mod
+from .outcar import final_energy, run_completed
 
 # Pause briefly after this many submissions to avoid hammering the scheduler /
 # tripping QOS submission-rate limits.
@@ -24,15 +25,17 @@ RESET_KEEP = {"INCAR", "KPOINTS", "POTCAR", "POSCAR", "submit.sl"}
 
 
 def has_result(run_dir: Path) -> bool:
-    """True if this run produced a usable final energy.
+    """True if this run completed successfully.
 
-    Matches the report's validity test: an OUTCAR from which a final
-    ``energy(sigma->0)`` can be read (i.e. at least one electronic step finished).
+    Matches the folder navigator's "run" status: the OUTCAR ends with VASP's
+    normal-termination timing footer *and* yields a final ``energy(sigma->0)``.
+    An energy alone is not enough - it appears after the first SCF loop, long
+    before a job finishes.
     """
     outcar = run_dir / "OUTCAR"
     if not outcar.is_file():
         return False
-    return final_energy(outcar) is not None
+    return run_completed(outcar) and final_energy(outcar) is not None
 
 
 def reset_run_dir(run_dir: Path) -> int:
@@ -79,14 +82,24 @@ def submit(
 
     if retry_failed:
         all_n = len(scripts)
-        scripts = [s for s in scripts if not has_result(s.parent)]
+        keep: list[Path] = []
+        done = running = 0
+        for s in scripts:
+            status, _detail = index_mod.run_status(s.parent)
+            if status == "done":
+                done += 1
+            elif status == "running":
+                running += 1  # never reset a job that is still going
+            else:
+                keep.append(s)
+        scripts = keep
         print(
             f"Found {all_n} configs under {root}/; "
-            f"{all_n - len(scripts)} already have a result, "
+            f"{done} completed, {running} still running (left alone), "
             f"{len(scripts)} to retry."
         )
         if not scripts:
-            print("Nothing to retry - every config has a usable result.")
+            print("Nothing to retry.")
             return 0
     else:
         print(f"Found {len(scripts)} submit.sl scripts under {root}/")

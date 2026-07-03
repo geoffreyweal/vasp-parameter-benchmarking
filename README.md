@@ -147,11 +147,29 @@ VASP_Parameter_Benchmarking/folder_index.html
 ```
 
 Open it in a browser and pick a value for each parameter from the dropdowns; it
-lists the matching folder number(s) and each one's status — **✓ run**,
-**⏳ running**, **✗ failed**, or **— pending**. Leave any parameter on **(any)**
-to not constrain it — e.g. ENCUT=600 with KPOINTS on **(any)** lists every folder
-at ENCUT=600. A full table of every folder and its values is shown below the
-selectors.
+lists the matching folder number(s) and each one's status. Leave any parameter
+on **(any)** to not constrain it — e.g. ENCUT=600 with KPOINTS on **(any)**
+lists every folder at ENCUT=600. A full table of every folder and its values is
+shown below the selectors.
+
+The statuses come primarily from each folder's own files (the OUTCAR above all):
+
+- **✓ run** — the OUTCAR ends with VASP's normal-termination timing footer
+  (*"General timing and accounting informations"*) and yields a final energy.
+  An energy alone is **not** enough — it appears after the first SCF loop, long
+  before a job finishes — so still-running jobs are not misreported as run.
+- **⏳ running** — launched and not complete, and either SLURM (`sacct`) says the
+  job is still active, or — with `--no-sacct` / no scheduler — the OUTCAR/OSZICAR
+  was written to within the last 30 minutes (VASP writes at least once per
+  electronic step).
+- **✗ error (…)** — finished with an identifiable error, shown in parentheses:
+  a VASP abort message near the end of the OUTCAR (e.g. `VERY BAD NEWS`,
+  `ZBRENT: fatal`), an abnormal SLURM terminal state (`TIMEOUT`,
+  `OUT_OF_MEMORY`, `FAILED`, …), or an error line in `slurm-<id>.out`
+  (e.g. `DUE TO TIME LIMIT`).
+- **✗ failed** — launched, not complete, not running, but no specific error
+  could be identified (e.g. killed without leaving a message).
+- **— pending** — no sign the run has been launched yet.
 
 **The page is a snapshot, not live — pressing refresh in your browser does
 nothing.** When you open `folder_index.html` from disk (a `file://` page), the
@@ -170,8 +188,9 @@ vasp-parameter-benchmarking status   # re-scan folders + rewrite folder_index.ht
 
 This is quick — it only re-scans and rewrites the navigator (no CSV/plots).
 `report` also refreshes it as part of collecting results. `status` uses `sacct`
-to tell a *running* job from a *failed* one; pass `--no-sacct` to skip that (a
-launched job with no result then shows as failed).
+to confirm whether a job is still active; pass `--no-sacct` to skip that —
+*running* is then inferred from recent OUTCAR/OSZICAR write activity, so the
+classification works from the folder contents alone.
 
 **Want a truly live view where refresh alone updates it?** That requires serving
 the page from a small local process (so each refresh re-scans) rather than opening
@@ -225,17 +244,20 @@ gave a `mem_per_cpu` table), so submission needs no special flags.
 
 #### Retrying failed jobs
 
-A job is "failed" if it produced no usable result — an `OUTCAR` with no readable
-final `energy(sigma->0)`. To reset and resubmit just those:
+A config needs retrying if it did not complete successfully — its `OUTCAR` does
+not end with VASP's normal-termination timing footer (the same test the folder
+navigator's **✓ run** uses). To reset and resubmit just those:
 
 ```bash
 vasp-parameter-benchmarking submit --retry-failed --dry-run  # list which
 vasp-parameter-benchmarking submit --retry-failed            # reset + resubmit
 ```
 
-For each failed config this resets the directory to its inputs (`INCAR`,
-`KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`) and resubmits. Configs that already
-have a result are left untouched.
+This retries every config whose status is *error*, *failed* or *pending*. For
+each one it resets the directory to its inputs (`INCAR`, `KPOINTS`, `POTCAR`,
+`POSCAR`, `submit.sl`) and resubmits. Completed configs are left untouched, and
+**still-running jobs are left alone** (never reset out from under the
+scheduler).
 
 ### Part 3 — `report`: compare convergence vs cost
 

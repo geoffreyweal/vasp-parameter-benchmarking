@@ -131,3 +131,29 @@ def is_running(run_dir: str | Path) -> bool | None:
     if state is None:
         return None
     return any(state.startswith(s) for s in _ACTIVE_STATES)
+
+
+# Terminal states that mean the job ended abnormally. Prefix-matched, since
+# sacct decorates some (e.g. "CANCELLED by 12345").
+_ERROR_STATES = (
+    "FAILED", "TIMEOUT", "CANCELLED", "OUT_OF_MEMORY", "NODE_FAIL",
+    "PREEMPTED", "BOOT_FAIL", "DEADLINE", "REVOKED",
+)
+
+
+def error_state(run_dir: str | Path) -> str | None:
+    """The SLURM state if this run's job ended abnormally (e.g. ``"TIMEOUT"``).
+
+    Returns None when the job completed normally, is still active, or its state
+    cannot be determined (no job id / sacct unavailable).
+    """
+    job_id = find_job_id(run_dir)
+    if job_id is None:
+        return None
+    state = job_state(job_id)
+    if state is None:
+        return None
+    for s in _ERROR_STATES:
+        if state.startswith(s):
+            return s
+    return None
