@@ -32,9 +32,10 @@ The tool runs in three parts, plus an optional cleanup step.
 | Subcommand | Purpose |
 | --- | --- |
 | `setup`  | Generate one benchmark directory per parameter combination. |
-| `submit` | `sbatch` every generated job (submit.sl as written by `setup`). |
+| `submit` | `sbatch` the configs that need running (pending + failed; run/running/error skipped). |
 | `report` | Collect convergence + cost into CSV + HTML. |
-| `status` | Re-scan folders and refresh `folder_index.html` (run/running/failed/pending). |
+| `status` | Re-scan folders and refresh `folder_index.html` (run/running/error/failed/pending). |
+| `reset`  | Reset errored configs back to their inputs so `submit` can relaunch them. |
 | `clean`  | Delete bulky VASP outputs once you're done. |
 
 ### Part 1 — `setup`: create the benchmarking files
@@ -220,8 +221,8 @@ add 'INCAR SIGMA = 0.05, 0.1, 0.2' to the parameters file, run setup again:
 > For the reuse to line up, **list each parameter's existing/default value (the
 > one already in your base `INCAR`/`KPOINTS`) first** — your earlier runs hold the
 > new parameter at its base value, so they match the combinations that keep it
-> there and aren't duplicated. Then `submit` (or `submit --retry-failed`) only
-> runs the new folders.
+> there and aren't duplicated. Then `submit` only runs the new folders (it
+> skips everything that has already run).
 
 ##### Other options
 
@@ -237,27 +238,42 @@ vasp-parameter-benchmarking submit --dry-run  # list what would be submitted
 vasp-parameter-benchmarking submit --yes      # no prompt
 ```
 
-Finds every `submit.sl` under `--root` and `sbatch`es it as-is, pausing briefly
-every 10 submissions to avoid scheduler rate limits. Any per-config
-`--mem-per-cpu` was already written into each `submit.sl` at `setup` time (if you
-gave a `mem_per_cpu` table), so submission needs no special flags.
+`submit` classifies every config first (the same rules as the folder navigator)
+and **only submits what needs running**:
 
-#### Retrying failed jobs
+- **pending** configs are submitted;
+- **failed** configs (died without an identifiable error) are reset to their
+  inputs and resubmitted;
+- **✓ run**, **⏳ running** and **✗ error** configs are skipped — completed work
+  is never re-run, running jobs are never touched, and errored configs are never
+  blindly resubmitted (fix the cause, then use `reset`, below).
 
-A config needs retrying if it did not complete successfully — its `OUTCAR` does
-not end with VASP's normal-termination timing footer (the same test the folder
-navigator's **✓ run** uses). To reset and resubmit just those:
+So re-running `submit` is always safe: on a fresh tree it submits everything,
+after adding parameters it submits only the new folders, and on a finished tree
+it submits nothing. It `sbatch`es each `submit.sl` as-is, pausing briefly every
+10 submissions to avoid scheduler rate limits. Any per-config `--mem-per-cpu`
+was already written into each `submit.sl` at `setup` time.
+
+#### Recovering from errors — `reset`
+
+Errored configs (`✗ error` — e.g. `TIMEOUT`, `Out Of Memory`, a VASP abort) are
+deliberately not resubmitted by `submit`: rerunning them unchanged would usually
+hit the same wall. Fix the cause first (e.g. raise the `mem_per_cpu` table or
+the time limit), then:
 
 ```bash
-vasp-parameter-benchmarking submit --retry-failed --dry-run  # list which
-vasp-parameter-benchmarking submit --retry-failed            # reset + resubmit
+vasp-parameter-benchmarking reset --dry-run   # list errored configs + reasons
+vasp-parameter-benchmarking reset             # reset them to their inputs
+vasp-parameter-benchmarking submit            # relaunch them (now pending)
 ```
 
-This retries every config whose status is *error*, *failed* or *pending*. For
-each one it resets the directory to its inputs (`INCAR`, `KPOINTS`, `POTCAR`,
-`POSCAR`, `submit.sl`) and resubmits. Completed configs are left untouched, and
-**still-running jobs are left alone** (never reset out from under the
-scheduler).
+`reset` deletes everything in each errored config except its inputs (`INCAR`,
+`KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`), returning it to **pending**, and
+refreshes the folder navigator. All other configs are untouched. It also
+re-applies each reset config's `--mem-per-cpu` from the **current** `mem_per_cpu`
+table — so after an out-of-memory error, raise the table in your parameters
+file, re-run `setup` (which records it), then `reset`: the relaunched job gets
+the new memory even though `setup` never edits existing folders.
 
 ### Part 3 — `report`: compare convergence vs cost
 

@@ -3,9 +3,10 @@
 Subcommands:
 
   vasp-parameter-benchmarking setup   - Part 1: create one dir per parameter combo.
-  vasp-parameter-benchmarking submit  - Part 2: submit all jobs to SLURM.
+  vasp-parameter-benchmarking submit  - Part 2: submit the configs that need running.
   vasp-parameter-benchmarking report  - Part 3: collect convergence + cost results.
   vasp-parameter-benchmarking status  - re-scan folders + refresh folder_index.html.
+  vasp-parameter-benchmarking reset   - reset errored configs back to their inputs.
   vasp-parameter-benchmarking clean   - delete bulky outputs, keep inputs + results.
 """
 
@@ -74,18 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ---- submit ----------------------------------------------------------
-    p_submit = sub.add_parser("submit", help="Part 2: submit all jobs to SLURM.")
+    p_submit = sub.add_parser(
+        "submit",
+        help="Part 2: submit the configs that need running (pending + failed; "
+        "completed/running/errored are skipped).",
+    )
     p_submit.add_argument(
         "--root", default="VASP_Parameter_Benchmarking", help="Benchmark root directory."
     )
     p_submit.add_argument("--dry-run", action="store_true", help="List jobs without submitting.")
     p_submit.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
-    p_submit.add_argument(
-        "--retry-failed",
-        action="store_true",
-        help="Only (re)submit configs with no usable result; reset each to its "
-        "inputs + submit.sl first.",
-    )
 
     # ---- report ----------------------------------------------------------
     p_report = sub.add_parser("report", help="Part 3: collect results into CSV + HTML.")
@@ -124,6 +123,20 @@ def build_parser() -> argparse.ArgumentParser:
         "output-file activity instead of the scheduler.",
     )
 
+    # ---- reset -----------------------------------------------------------
+    p_reset = sub.add_parser(
+        "reset",
+        help="Reset errored configs back to their inputs (they become pending, "
+        "so the next 'submit' relaunches them). Fix the error's cause first.",
+    )
+    p_reset.add_argument(
+        "--root", default="VASP_Parameter_Benchmarking", help="Benchmark root directory."
+    )
+    p_reset.add_argument(
+        "--dry-run", action="store_true", help="List errored configs without resetting."
+    )
+    p_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
+
     # ---- clean -----------------------------------------------------------
     p_clean = sub.add_parser(
         "clean",
@@ -157,12 +170,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "submit":
             from .submit import submit
 
-            submit(
-                root=args.root,
-                dry_run=args.dry_run,
-                yes=args.yes,
-                retry_failed=args.retry_failed,
-            )
+            submit(root=args.root, dry_run=args.dry_run, yes=args.yes)
+        elif args.command == "reset":
+            from .submit import reset
+
+            reset(root=args.root, dry_run=args.dry_run, yes=args.yes)
         elif args.command == "report":
             from .report import report
 
