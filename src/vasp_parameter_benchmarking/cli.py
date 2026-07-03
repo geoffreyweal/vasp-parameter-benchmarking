@@ -85,6 +85,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_submit.add_argument("--dry-run", action="store_true", help="List jobs without submitting.")
     p_submit.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
+    p_submit.add_argument(
+        "--submit-only",
+        action="append",
+        metavar="N1,N2,...",
+        help="Submit only these folder numbers (comma-separated, repeatable; "
+        "'3' and '003' both work). Status rules still apply - completed/"
+        "running/errored folders are refused with a note.",
+    )
+    p_submit.add_argument(
+        "--reject",
+        action="append",
+        metavar="N1,N2,...",
+        help="Exclude these folder numbers from this submission "
+        "(comma-separated, repeatable).",
+    )
 
     # ---- report ----------------------------------------------------------
     p_report = sub.add_parser("report", help="Part 3: collect results into CSV + HTML.")
@@ -170,7 +185,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "submit":
             from .submit import submit
 
-            submit(root=args.root, dry_run=args.dry_run, yes=args.yes)
+            submit(
+                root=args.root,
+                dry_run=args.dry_run,
+                yes=args.yes,
+                submit_only=args.submit_only,
+                reject=args.reject,
+            )
         elif args.command == "reset":
             from .submit import reset
 

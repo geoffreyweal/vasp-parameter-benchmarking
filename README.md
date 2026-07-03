@@ -1,17 +1,21 @@
 # vasp-parameter-benchmarking
 
-Sweep [VASP](https://www.vasp.at/) **INCAR / KPOINTS parameters** (ENCUT, SIGMA,
-k-point density, ...) to find the cheapest values that still give a converged
-result. It builds one job per parameter combination, submits them, and produces
-an interactive report of **convergence vs cost**.
+A command-line tool for answering a practical VASP question: **how high do the
+calculation parameters really need to be?** Give it your VASP inputs and the
+parameter values you want to test (ENCUT, SIGMA, k-point density, …); it
+generates one job directory per combination, submits them to SLURM, tracks
+which have completed / are running / hit an error, and collects everything into
+an interactive **convergence vs cost** report — so you can pick the cheapest
+settings that still give a converged result.
 
 > **Sibling tool.** [`vasp-core-benchmarking`](https://github.com/geoffreyweal/vasp-core-benchmarking)
 > benchmarks the *parallel layout* (MPI ranks × OpenMP threads) by rewriting
-> `submit.sl`. This tool does the opposite: it **leaves `submit.sl` alone** and
-> varies only the calculation parameters in `INCAR`/`KPOINTS`. The only `#SBATCH`
-> directives it ever touches are `--job-name` (set to `vasp-para-bench-<folder>`
-> so jobs are identifiable in `squeue`; opt out with `--no-name-jobs`) and the
-> optional `--mem-per-cpu` (see below), so heavier runs can get more memory.
+> `submit.sl`. This tool does the opposite: it varies only the calculation
+> parameters and **leaves your `submit.sl` alone** — the only `#SBATCH`
+> directives it ever sets are `--job-name` (so jobs are identifiable in
+> `squeue`) and, optionally, `--mem-per-cpu` (so heavier configs can request
+> more memory). Everything else about how your jobs run is exactly what you
+> wrote.
 
 ## Install
 
@@ -19,247 +23,237 @@ an interactive report of **convergence vs cost**.
 pip install git+https://github.com/geoffreyweal/vasp-parameter-benchmarking.git
 ```
 
-Check it installed with:
+Check it installed:
 
 ```bash
 vasp-parameter-benchmarking --version
 ```
 
-## Workflow
-
-The tool runs in three parts, plus an optional cleanup step.
+## The workflow at a glance
 
 | Subcommand | Purpose |
 | --- | --- |
-| `setup`  | Generate one benchmark directory per parameter combination. |
-| `submit` | `sbatch` the configs that need running (pending + failed; run/running/error skipped). |
-| `report` | Collect convergence + cost into CSV + HTML. |
-| `status` | Re-scan folders and refresh `folder_index.html` (run/running/error/failed/pending). |
-| `reset`  | Reset errored configs back to their inputs so `submit` can relaunch them. |
-| `clean`  | Delete bulky VASP outputs once you're done. |
+| `setup` | Generate one numbered job directory per parameter combination. |
+| `submit` | Send the jobs that need running to SLURM (never re-submits finished/running/errored work). |
+| `status` | Re-scan the folders and refresh the `folder_index.html` navigator. |
+| `reset` | Return errored configs to their inputs so `submit` can relaunch them. |
+| `report` | Collect all results into a CSV and an interactive HTML report. |
+| `clean` | Delete bulky VASP outputs once you are done. |
 
-### Part 1 — `setup`: create the benchmarking files
+A typical study:
 
-Provide a `VASP_Files/` directory of inputs (or point at it with `--vasp-files`):
+```bash
+# 1. put your inputs in VASP_Files/ and your sweep in the parameters file, then
+vasp-parameter-benchmarking setup
+vasp-parameter-benchmarking submit
+
+# 2. while jobs run, check progress whenever you like
+vasp-parameter-benchmarking status
+
+# 3. if something hit a wall (e.g. out of memory): fix the cause, then
+vasp-parameter-benchmarking reset
+vasp-parameter-benchmarking submit
+
+# 4. when the jobs are done
+vasp-parameter-benchmarking report
+vasp-parameter-benchmarking clean
+```
+
+## Part 1 — `setup`: generate the benchmark directories
+
+### The inputs — `VASP_Files/`
+
+Provide a directory of ordinary VASP inputs (default `VASP_Files/`, or point at
+it with `--vasp-files`):
 
 ```text
 VASP_Files/
 ├── INCAR      # required
 ├── POSCAR     # required
 ├── POTCAR     # required
-├── KPOINTS    # keep ONE KPOINTS to not sweep it (omit if using KSPACING) ...
+├── KPOINTS    # keep ONE plain KPOINTS to not sweep k-points ...
 ├── KPOINTS_1  # ... OR provide KPOINTS_1, KPOINTS_2, ... to sweep over them
 ├── KPOINTS_2
-├── submit.sl  # required — copied into every job (verbatim, bar --job-name/--mem-per-cpu)
-└── ...         # any extras (ML_FF, WAVECAR, CHGCAR, …) are copied too
+├── submit.sl  # required — your SLURM script, used as-is
+└── ...        # any extras (ML_FF, WAVECAR, CHGCAR, …) are copied too
 ```
 
-Every file in `VASP_Files/` is copied into each benchmark directory **unchanged**,
-including your `submit.sl`. The tool then edits **only** the parameters you sweep:
-it sets the relevant `INCAR` tags, and each config gets its assigned
-`KPOINTS_<n>` copied in as `KPOINTS`. Your base `INCAR` stays an ordinary
-single-value file; the INCAR sweep lives in the parameters file, and the KPOINTS
-sweep lives in the `KPOINTS_<n>` files themselves. (The only edits ever made to
-`submit.sl` are the `--job-name` directive — set to `vasp-para-bench-<folder>` by
-default, disable with `--no-name-jobs` — and `--mem-per-cpu`, if you add a
-`mem_per_cpu` table; see below.)
+Every file is copied into each job directory unchanged. `setup` then edits only
+what defines that particular combination: it sets the swept `INCAR` tags, and
+copies in the assigned `KPOINTS_<n>` as `KPOINTS`. Your base `INCAR` stays an
+ordinary single-value file — the sweep is described separately.
 
 > `POTCAR` files are distributed under the VASP licence, so provide your own.
 
-#### Choosing what to sweep — `vasp_parameter_benchmarking_parameters.txt`
+### The sweep — `vasp_parameter_benchmarking_parameters.txt`
 
-**INCAR tags** are swept via a parameters file (default
-`vasp_parameter_benchmarking_parameters.txt`, or pass `--parameters`). One line
-per swept tag, plus optional run settings (like `mode`) at the top:
+**INCAR tags** are swept via a plain-text parameters file (default
+`vasp_parameter_benchmarking_parameters.txt`, or pass `--parameters`):
 
 ```text
 # run settings
 mode = grid
 
-# what to sweep — one line each
+# what to sweep — one line per INCAR tag
 INCAR ENCUT = 300, 400, 500, 600, 700
 INCAR SIGMA = 0.05, 0.1, 0.2
 
-# optional: more memory for the heavier configs (applied by `setup`)
+# optional: more memory for the heavier configs
 mem_per_cpu from ENCUT = 2G, 4G, 6G, 8G, 8G
 ```
 
+- `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Nothing is hard-coded to
+  specific tags, and values are written verbatim, so
+  `INCAR LREAL = .FALSE., Auto` works too.
+- `mode = grid | oat` — how combinations are expanded (see below); a CLI
+  `--mode` overrides it.
+- `mem_per_cpu from <KEY> = m1, m2, ...` — a memory table (see below).
+
+INCAR sweeps can also be given on the command line — `--incar
+"ENCUT=400,500,600"` (repeatable). CLI flags and the file are merged; the CLI
+wins for a repeated tag.
+
 **KPOINTS** is swept with **files, not lines**: put `KPOINTS_1`, `KPOINTS_2`, …
-in `VASP_Files/` and `setup` sweeps over them automatically (a single plain
-`KPOINTS` means it is not swept and is copied unchanged). Since you author the
-files yourself, *any* KPOINTS format works — automatic mesh, Monkhorst-Pack,
-line mode, explicit lists. Each config's copy is verbatim except the first
-(comment) line, which is tagged with its label (e.g. `KPOINTS_2 (…)`) so the
-report and navigator can identify it; VASP ignores that line.
+in `VASP_Files/` and `setup` sweeps over them automatically. A single plain
+`KPOINTS` means k-points are not swept. Because you author the files yourself,
+*any* KPOINTS format works — automatic meshes, Monkhorst-Pack, line mode,
+explicit lists. Each config receives its assigned file verbatim, except that
+the first line (VASP's free comment line, which VASP ignores) is tagged with
+the label — e.g. `KPOINTS_2 (your original comment)` — so the report and
+navigator can identify which variation each folder holds.
 
-- `INCAR <TAG> = v1, v2, ...` — sweep any INCAR tag. Add a new parameter by
-  adding a line; nothing in the tool is hard-coded to specific tags. Values are
-  written verbatim, so `INCAR LREAL = .FALSE., Auto` works too.
-- `mem_per_cpu from <KEY> = m1, m2, ...` — request more SLURM memory for the
-  heavier configs (e.g. higher `ENCUT` or a denser `KPOINTS_<n>`). Give one
-  `--mem-per-cpu` value per value of the driving parameter, lined up by position
-  (`2G`, `512M`, or a bare number in MB); `mem_per_cpu from KPOINTS = 6G, 2G`
-  lines up with `KPOINTS_1, KPOINTS_2`. It is **not** a sweep axis — it creates
-  no extra folders. `setup` writes the chosen value into each config's
-  `#SBATCH --mem-per-cpu` line (adding one if your `submit.sl` has none), so each
-  folder is self-contained. List several lines (e.g. one keyed to `ENCUT`, one to
-  `KPOINTS`) and the **greatest** value wins for each config.
-- `mode = grid | oat` — see below. A CLI `--mode` overrides it.
-
-You can also (or instead) pass INCAR sweeps on the command line — `--incar
-"ENCUT=400,500,600"` (repeatable). CLI flags and the file are merged (CLI wins
-for a repeated tag).
-
-```bash
-vasp-parameter-benchmarking setup        # reads the parameters file
-vasp-parameter-benchmarking setup --incar "ENCUT=400,500,600" --mode oat
-```
-
-> **List your existing/default value first.** In `oat` mode the first value of
-> each parameter is the centre the others are varied around, and listing the
-> value already in your base `INCAR` first keeps later additive runs lined up
-> (see *Adding a parameter later*). The same goes for KPOINTS: `KPOINTS_1` is
-> the baseline, so make it your default/most-trusted variation.
+> **Put your most-trusted value first.** The first value of each parameter —
+> and `KPOINTS_1` — is the baseline: in `oat` mode it is the centre the other
+> parameters are varied around, and listing the value already in your base
+> `INCAR` first keeps later additive runs lined up.
 >
-> **No separate manifest.** The generated `INCAR`/`KPOINTS` in each config dir
-> *are* the record — `report` reads each config's actual values straight from
-> those files. `setup` also drops the effective sweep (mode + parameters) into
-> `<root>/vasp_parameter_benchmarking_parameters.txt` so `report` knows which
-> tags were swept, in what order.
+> **To benchmark `KSPACING`**, sweep it as an INCAR tag
+> (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit all KPOINTS files** from
+> `VASP_Files/` — VASP uses `KSPACING` only when no `KPOINTS` file is present.
 
-#### `mode`: how combinations are expanded
+### `mode`: how combinations are expanded
 
-- `grid` *(default)* — the full **Cartesian product** of every value. With ENCUT
-  (5) × KPOINTS (4) that is 20 jobs. Best when parameters interact.
-- `oat` — **one-at-a-time**: a baseline (the first value of each parameter) plus,
-  for each parameter, its remaining values with the rest held at baseline. The
-  same ENCUT × KPOINTS sweep becomes 1 + 4 + 3 = 8 jobs. Best for independent
-  convergence tests.
+- `grid` *(default)* — the full **Cartesian product** of every value. ENCUT (5
+  values) × KPOINTS (4 files) = 20 jobs. Best when parameters interact.
+- `oat` — **one-at-a-time**: one baseline job (the first value of everything),
+  plus each parameter's remaining values with the rest held at baseline. The
+  same sweep becomes 1 + 4 + 3 = 8 jobs. Best for independent convergence
+  tests.
 
-#### Numbered folders + the folder navigator
+### The memory table — `mem_per_cpu`
 
-Each job lands in a plain **numbered** directory — `VASP_Parameter_Benchmarking/001/`,
-`002/`, … The number is just a label; the `INCAR`/`KPOINTS` *inside* each folder
-define what it is, and that is what `report` reads. To find which folder holds a
-given variation, open the **folder navigator** that `setup` writes:
+Heavier configs (higher `ENCUT`, denser k-points) can need more memory. A
+`mem_per_cpu` line gives one `--mem-per-cpu` value per value of a driving
+parameter, matched by position:
 
 ```text
-VASP_Parameter_Benchmarking/folder_index.html
+INCAR ENCUT = 300, 400, 500, 600, 700
+mem_per_cpu from ENCUT   = 2G, 4G, 6G, 8G, 8G
+mem_per_cpu from KPOINTS = 2G, 5G          # lines up with KPOINTS_1, KPOINTS_2
 ```
 
-Open it in a browser and pick a value for each parameter from the dropdowns; it
-lists the matching folder number(s) and each one's status. Leave any parameter
-on **(any)** to not constrain it — e.g. ENCUT=600 with KPOINTS on **(any)**
-lists every folder at ENCUT=600. A full table of every folder and its values is
-shown below the selectors.
+Sizes are `2G`, `512M`, or a bare number in MB. The table is **not** a sweep
+axis — it creates no extra folders. `setup` writes the chosen value into each
+config's `#SBATCH --mem-per-cpu` directive (adding one if your `submit.sl` has
+none), so each folder is self-contained. When several tables apply to a config,
+the **greatest** value wins.
 
-The statuses come primarily from each folder's own files (the OUTCAR above all):
+### What `setup` produces
 
-- **✓ run** — the OUTCAR ends with VASP's normal-termination timing footer
-  (*"General timing and accounting informations"*) and yields a final energy.
-  An energy alone is **not** enough — it appears after the first SCF loop, long
-  before a job finishes — so still-running jobs are not misreported as run.
-- **⏳ running** — launched and not complete, and either SLURM (`sacct`) says the
-  job is still active, or — with `--no-sacct` / no scheduler — the OUTCAR/OSZICAR
-  was written to within the last 30 minutes (VASP writes at least once per
-  electronic step).
-- **✗ error (…)** — finished with an identifiable error, shown in parentheses:
-  a VASP abort message near the end of the OUTCAR (e.g. `VERY BAD NEWS`,
-  `ZBRENT: fatal`), an abnormal SLURM terminal state (`TIMEOUT`,
-  `OUT_OF_MEMORY`, `FAILED`, …), or an error line in `slurm-<id>.out`
-  (e.g. `DUE TO TIME LIMIT`).
-- **✗ failed** — launched, not complete, not running, but no specific error
-  could be identified (e.g. killed without leaving a message).
-- **— pending** — no sign the run has been launched yet.
+Each combination gets a plain **numbered** directory:
 
-**The page is a snapshot, not live — pressing refresh in your browser does
-nothing.** When you open `folder_index.html` from disk (a `file://` page), the
-browser security model forbids that page from re-scanning your folders or
-querying SLURM. The statuses are baked into the file when it is written, so
-reloading the tab just re-loads the same frozen data. The page shows a
-*"Status as of …"* timestamp so you can see how old it is.
-
-To bring it up to date you must **regenerate the file first, then refresh the
-tab**:
-
-```bash
-vasp-parameter-benchmarking status   # re-scan folders + rewrite folder_index.html
-# then hit refresh in the browser — now it reflects what has run
+```text
+VASP_Parameter_Benchmarking/     # change with --root
+├── 001/  002/  003/  ...        # one complete VASP job each
+├── folder_index.html            # the folder navigator (see below)
+└── vasp_parameter_benchmarking_parameters.txt   # the recorded sweep
 ```
 
-This is quick — it only re-scans and rewrites the navigator (no CSV/plots).
-`report` also refreshes it as part of collecting results. `status` uses `sacct`
-to confirm whether a job is still active; pass `--no-sacct` to skip that —
-*running* is then inferred from recent OUTCAR/OSZICAR write activity, so the
-classification works from the folder contents alone.
+The number is just a label — the `INCAR`/`KPOINTS` *inside* each folder define
+what it is, and that is what every later command reads back. There is no hidden
+manifest. `setup` records the effective sweep (mode, tags, order, memory table)
+in the root's parameters file so `report`, `status` and `reset` know the sweep
+without you re-passing it.
 
-**Want a truly live view where refresh alone updates it?** That requires serving
-the page from a small local process (so each refresh re-scans) rather than opening
-it from disk — it is not possible for a plain `file://` page. Not currently built
-in; ask if you'd like a `browse`/server command added.
+Two `#SBATCH` directives are set in each copied `submit.sl` (everything else is
+byte-for-byte yours):
 
-> To benchmark `KSPACING`, sweep it as an INCAR tag
-> (`INCAR KSPACING = 0.1, 0.2, 0.3`) and **omit all KPOINTS files**
-> (`KPOINTS` and `KPOINTS_<n>`) from `VASP_Files/` — VASP uses `KSPACING` only
-> when no `KPOINTS` file is present.
+- `--job-name=vasp-para-bench-<folder>` (e.g. `vasp-para-bench-001`) so jobs
+  are identifiable in `squeue`/`sacct`. Opt out with `--no-name-jobs`.
+- `--mem-per-cpu=<value>`, only if you gave a `mem_per_cpu` table.
 
-#### Adding a parameter later (incremental studies)
+### Extending a study later
 
-`setup` is **additive and idempotent**. To extend a study — add a parameter, or
-more values to an existing one — just edit the parameters file and run `setup`
-again. It works out the combinations the new sweep needs, **reuses every folder
-that already exists** (matched by the values in their `INCAR`/`KPOINTS`), and
-creates only the genuinely new ones with the next free numbers. Existing folders
-are never renamed, touched or re-run, so completed jobs are preserved.
+`setup` is **additive and idempotent**: edit the parameters file (or add
+`KPOINTS_<n>` files) and run it again. It reuses every existing folder whose
+`INCAR`/`KPOINTS` match a needed combination and creates only the genuinely new
+ones, with the next free numbers. Existing folders are never renamed, touched
+or re-run.
 
 ```text
 Study 1 (ENCUT × KPOINTS, oat) → 001 … 006
-add 'INCAR SIGMA = 0.05, 0.1, 0.2' to the parameters file, run setup again:
+add 'INCAR SIGMA = 0.05, 0.1, 0.2' and run setup again:
   → reuses 001–006, creates only 007 (SIGMA=0.1) and 008 (SIGMA=0.2)
 ```
 
-> For the reuse to line up, **list each parameter's existing/default value (the
-> one already in your base `INCAR`/`KPOINTS`) first** — your earlier runs hold the
-> new parameter at its base value, so they match the combinations that keep it
-> there and aren't duplicated. Then `submit` only runs the new folders (it
-> skips everything that has already run).
+Then `submit` runs only the new folders, because it skips everything that has
+already run.
 
-##### Other options
-
-`--vasp-files` (default `VASP_Files`) points at the inputs; `--submit` overrides
-the submit script (default `<vasp-files>/submit.sl`); `--root` (default
-`VASP_Parameter_Benchmarking`) sets the output directory.
-
-### Part 2 — `submit`: send the jobs to SLURM
+## Part 2 — `submit`: send the jobs to SLURM
 
 ```bash
-vasp-parameter-benchmarking submit            # prompts for confirmation
-vasp-parameter-benchmarking submit --dry-run  # list what would be submitted
+vasp-parameter-benchmarking submit            # shows the plan, prompts
+vasp-parameter-benchmarking submit --dry-run  # shows the plan, submits nothing
 vasp-parameter-benchmarking submit --yes      # no prompt
 ```
 
-`submit` classifies every config first (the same rules as the folder navigator)
-and **only submits what needs running**:
+`submit` classifies every config first (same rules as the navigator, below) and
+**only submits what needs running**:
 
 - **pending** configs are submitted;
 - **failed** configs (died without an identifiable error) are reset to their
   inputs and resubmitted;
-- **✓ run**, **⏳ running** and **✗ error** configs are skipped — completed work
-  is never re-run, running jobs are never touched, and errored configs are never
-  blindly resubmitted (fix the cause, then use `reset`, below).
+- **run**, **running** and **error** configs are skipped — completed work is
+  never re-run, running jobs are never touched, and errored configs are never
+  blindly resubmitted (fix the cause, then `reset`; see below).
 
-So re-running `submit` is always safe: on a fresh tree it submits everything,
-after adding parameters it submits only the new folders, and on a finished tree
-it submits nothing. It `sbatch`es each `submit.sl` as-is, pausing briefly every
-10 submissions to avoid scheduler rate limits. Any per-config `--mem-per-cpu`
-was already written into each `submit.sl` at `setup` time.
+So re-running `submit` is always safe: a fresh tree submits everything, a
+finished tree submits nothing. Jobs are `sbatch`ed with a short pause every 10
+submissions to respect scheduler rate limits.
 
-#### Recovering from errors — `reset`
+Before anything is launched, the exact plan is shown and confirmed — nothing is
+ever submitted by accident:
 
-Errored configs (`✗ error` — e.g. `TIMEOUT`, `Out Of Memory`, a VASP abort) are
-deliberately not resubmitted by `submit`: rerunning them unchanged would usually
-hit the same wall. Fix the cause first (e.g. raise the `mem_per_cpu` table or
-the time limit), then:
+```text
+Found 6 configs under VASP_Parameter_Benchmarking/: 1 run, 0 running, 1 error (all skipped); 4 eligible.
+Will submit 4 job(s):
+  003  (pending)
+  004  (pending)
+  005  (pending)
+  006  (failed - will reset first)
+Submit these 4 job(s) to SLURM? [y=submit / N=abort / o=only these... / r=reject these...]
+```
+
+At the prompt, **`o`** asks for folder numbers to submit *only*, and **`r`**
+asks for folder numbers to *reject*; the plan is re-shown after each edit and
+you confirm again. Numbers may be comma- or space-separated, and `3` and `003`
+both work. The same narrowing is available as flags:
+
+```bash
+vasp-parameter-benchmarking submit --submit-only 3,4   # only these folders
+vasp-parameter-benchmarking submit --reject 5,6        # all but these
+```
+
+Both are repeatable. Neither `--submit-only` nor `o` can override the status
+rules — asking for a completed/running/errored folder prints a note and skips
+it, so a double submission cannot be forced.
+
+### Recovering from errors — `reset`
+
+Errored configs (e.g. `TIMEOUT`, out-of-memory, a VASP abort) are deliberately
+not resubmitted by `submit`: rerunning them unchanged would usually hit the
+same wall. Fix the cause first — raise the `mem_per_cpu` table, extend the time
+limit, correct the input — then:
 
 ```bash
 vasp-parameter-benchmarking reset --dry-run   # list errored configs + reasons
@@ -269,13 +263,68 @@ vasp-parameter-benchmarking submit            # relaunch them (now pending)
 
 `reset` deletes everything in each errored config except its inputs (`INCAR`,
 `KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`), returning it to **pending**, and
-refreshes the folder navigator. All other configs are untouched. It also
-re-applies each reset config's `--mem-per-cpu` from the **current** `mem_per_cpu`
-table — so after an out-of-memory error, raise the table in your parameters
-file, re-run `setup` (which records it), then `reset`: the relaunched job gets
-the new memory even though `setup` never edits existing folders.
+refreshes the navigator. All other configs are untouched.
 
-### Part 3 — `report`: compare convergence vs cost
+It also re-applies each reset config's `--mem-per-cpu` from the **current**
+memory table. So the out-of-memory recovery is: raise the table in your
+parameters file → `setup` (records it; existing folders are not otherwise
+touched) → `reset` → `submit` — and the relaunched job requests the new memory.
+
+## Watching progress — `status` and the folder navigator
+
+`setup` writes a self-contained **folder navigator** into the benchmark root:
+
+```text
+VASP_Parameter_Benchmarking/folder_index.html
+```
+
+Open it in a browser and pick a value for each parameter from the dropdowns; it
+lists the matching folder number(s) and each one's status. Leave a parameter on
+**(any)** to not constrain it — e.g. ENCUT=600 with KPOINTS on **(any)** lists
+every folder at ENCUT=600. A full table of every folder, its values and its
+status sits below the selectors.
+
+### How statuses are decided
+
+Statuses come primarily from each folder's own files — the OUTCAR above all —
+so they work with or without the scheduler:
+
+- **✓ run** — the OUTCAR ends with VASP's normal-termination timing footer
+  (*"General timing and accounting informations"*) and yields a final energy.
+  An energy alone is **not** enough — it appears after the first SCF loop, long
+  before a job finishes — so still-running jobs are never misreported as run.
+- **⏳ running** — launched and not complete, and either `sacct` says the job is
+  still active, or (without `sacct`) the OUTCAR/OSZICAR was written to within
+  the last 30 minutes — VASP writes at least once per electronic step.
+- **✗ error (reason)** — finished with an identifiable error, shown in
+  parentheses: a VASP abort message near the end of the OUTCAR (`VERY BAD
+  NEWS`, `ZBRENT: fatal`, …), an abnormal SLURM terminal state (`TIMEOUT`,
+  `OUT_OF_MEMORY`, `FAILED`, …), or an error line in `slurm-<id>.out` (`DUE TO
+  TIME LIMIT`, `oom-kill`, …).
+- **✗ failed** — launched, not complete, not running, but no specific error
+  could be identified (e.g. killed without leaving a message).
+- **— pending** — no sign the run has been launched yet.
+
+### The page is a snapshot — refresh it with `status`
+
+Pressing refresh in the browser does **nothing** on its own: a page opened from
+disk (`file://`) is forbidden by the browser from re-scanning your folders, so
+the statuses are frozen at the moment the file was written (a *"Status as of
+…"* timestamp on the page shows how old it is). To bring it up to date,
+regenerate the file, then refresh the tab:
+
+```bash
+vasp-parameter-benchmarking status
+# Rewrote VASP_Parameter_Benchmarking/folder_index.html (15 folder(s): 9 run, 2 running, 1 error, 0 failed, 3 pending).
+# Refresh the page in your browser to see the updated statuses.
+```
+
+`status` is quick — it only re-scans and rewrites the navigator (no CSV or
+plots). `report` also refreshes it as part of collecting results. Pass
+`--no-sacct` to skip scheduler queries; *running* is then inferred from recent
+output-file activity alone.
+
+## Part 3 — `report`: compare convergence vs cost
 
 ```bash
 vasp-parameter-benchmarking report                 # reads VASP_Parameter_Benchmarking/
@@ -283,36 +332,37 @@ vasp-parameter-benchmarking report --no-sacct      # skip SLURM accounting queri
 vasp-parameter-benchmarking report --skip-steps 10 # drop the first 10 warm-up steps
 ```
 
-The sweep (which tags, their order, the mode) is read from the parameters file
-`setup` wrote into `--root` — or pass your own with `--parameters`. For each
-completed run this collects:
+For every usable run this collects:
 
-- **Final energy** — `energy(sigma->0)` from `OUTCAR` (falling back to `E0` from
-  `OSZICAR`), plus energy per atom.
-- **Peak force** — the largest force on any ion in the last `TOTAL-FORCE` block,
-  as an optional accuracy check.
-- **Cost** — mean & std-dev of the per-electronic-step `LOOP: … real time`. The
-  first few warm-up steps are dropped (`--skip-steps`, default 5).
-- **SLURM utilisation** — elapsed time and peak memory via `sacct --json` (left
-  blank with `--no-sacct`).
+- **Final energy** — `energy(sigma->0)` from the OUTCAR (falling back to `E0`
+  from OSZICAR), plus energy per atom.
+- **Peak force** — the largest force on any ion in the last `TOTAL-FORCE`
+  block, as an optional accuracy check.
+- **Cost** — mean and std-dev of the per-electronic-step `LOOP: … real time`,
+  with the first few warm-up steps dropped (`--skip-steps`, default 5).
+- **SLURM utilisation** — elapsed time and peak memory via `sacct --json`
+  (left blank with `--no-sacct`).
 
-Outputs go to `report/` (change with `--out`): `results.csv` (all metrics),
-`skipped.txt` (unusable runs), and a self-contained
-`vasp_parameter_benchmark_results.html`. It also refreshes the root
-`folder_index.html` so each folder's run/pending status is up to date.
+Outputs go to `report/` (change with `--out`):
 
-The HTML shows results against each swept parameter, selectable from a dropdown,
-in two panels:
+- `results.csv` — every metric for every run;
+- `skipped.txt` — runs that could not be parsed;
+- `vasp_parameter_benchmark_results.html` — the interactive report
+  (self-contained; open it anywhere).
 
-- **Energy per atom** vs the parameter value.
-- **Cost** — mean wall time per electronic step vs the parameter value.
+The HTML report shows two panels — **Energy** (final total energy, eV) and
+**Cost per electronic step** (s) — with controls along the top:
 
-When more than one parameter is swept, the remaining parameters split the points
-into coloured series (shown in the legend), so every config is plotted without
-assuming any reference point. Read the two panels together: find where the energy
-stops changing and see what each value costs.
+- an **x-axis parameter** selector: choose which swept parameter to plot
+  against;
+- one selector per remaining parameter: **pin it to a constant value**, or
+  leave it on **All values** to plot every combination as its own
+  colour-coded series.
 
-### Optional — `clean`: reclaim disk space
+Read the two panels together: find where the energy stops changing as the
+x-axis parameter increases, then check what each step up costs.
+
+## Optional — `clean`: reclaim disk space
 
 ```bash
 vasp-parameter-benchmarking clean --dry-run   # list what would go + total size
@@ -320,7 +370,8 @@ vasp-parameter-benchmarking clean             # prompts for confirmation
 vasp-parameter-benchmarking clean --yes       # no prompt
 ```
 
-In every directory under `--root` this keeps `INCAR`, `KPOINTS`, `POTCAR`,
-`POSCAR`, `OUTCAR`, `OSZICAR`, scripts (`*.sh`, `*.sl`), slurm logs and the root
-parameters file + `folder_index.html`; deletes the rest (WAVECAR, CHGCAR,
-vaspout.h5, vasprun.xml, ML_FF, …) and reports the space freed.
+In every directory under `--root` this keeps the inputs (`INCAR`, `KPOINTS`,
+`POTCAR`, `POSCAR`), the results (`OUTCAR`, `OSZICAR`), scripts (`*.sh`,
+`*.sl`), slurm logs, and the root parameters file + `folder_index.html`. It
+deletes the rest (WAVECAR, CHGCAR, vaspout.h5, vasprun.xml, ML_FF, …) and
+reports the space freed.
