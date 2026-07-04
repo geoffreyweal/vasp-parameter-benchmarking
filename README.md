@@ -350,17 +350,20 @@ Outputs go to `report/` (change with `--out`):
 - `vasp_parameter_benchmark_results.html` — the interactive report
   (self-contained; open it anywhere).
 
-The HTML report shows two panels — **Energy** (final total energy, eV) and
-**Cost per electronic step** (s) — with controls along the top:
+The HTML report shows the **Energy** panel (final total energy, eV), with
+controls along the top:
 
 - an **x-axis parameter** selector: choose which swept parameter to plot
   against;
 - one selector per remaining parameter: **pin it to a constant value**, or
   leave it on **All values** to plot every combination as its own
-  colour-coded series.
+  colour-coded series;
+- a **"show cost per electronic step"** tick box: selecting it adds the
+  **Cost** panel (mean wall time per electronic step, s) alongside the energy
+  panel; it is hidden by default.
 
-Read the two panels together: find where the energy stops changing as the
-x-axis parameter increases, then check what each step up costs.
+Find where the energy stops changing as the x-axis parameter increases, then
+tick the cost box to see what each step up costs.
 
 ## Optional — `clean`: reclaim disk space
 

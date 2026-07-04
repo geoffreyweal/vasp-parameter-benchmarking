@@ -230,9 +230,19 @@ function buildControls() {
     bar.appendChild(field);
   });
 
+  // tick box: the cost panel is hidden unless this is selected
+  const costBox = el("input", { type: "checkbox", id: "showCost" });
+  const costField = el("div", { class: "vpb-field" }, [
+    el("label", { class: "vpb-checkline" }, [
+      costBox, " show cost per electronic step",
+    ]),
+  ]);
+  bar.appendChild(costField);
+
   document.getElementById("xsel").addEventListener("change", redraw);
   P.params.forEach(p =>
     document.getElementById("const_" + p.key).addEventListener("change", redraw));
+  costBox.addEventListener("change", redraw);
 }
 
 function xOf(rec, key) {
@@ -328,8 +338,19 @@ function redraw() {
     xaxis: xaxis, yaxis: { title: { text: "time / electronic step (s)" }, rangemode: "tozero" },
   });
   const opts = { responsive: true, displaylogo: false };
+
+  // The cost panel only exists while its tick box is selected; hide it first
+  // so the energy panel is sized to the remaining width before drawing.
+  const showCost = document.getElementById("showCost").checked;
+  const costDiv = document.getElementById("plotCost");
+  costDiv.style.display = showCost ? "" : "none";
+
   Plotly.react("plotEnergy", energyTraces, energyLayout, opts);
-  Plotly.react("plotCost", costTraces, costLayout, opts);
+  if (showCost) {
+    Plotly.react("plotCost", costTraces, costLayout, opts);
+  } else if (costDiv.data) {
+    Plotly.purge(costDiv);
+  }
 }
 
 buildControls();
@@ -348,6 +369,9 @@ h1 { font-size: 20px; font-weight: 600; text-align: center; margin: 0 0 18px; }
 .vpb-select { font: 13px Helvetica Neue, Helvetica, Arial, sans-serif; padding: 5px 8px;
   border: 1px solid rgba(0,0,0,0.25); border-radius: 5px; background: white; min-width: 120px; }
 .vpb-select:disabled { background: #eee; color: #999; }
+.vpb-checkline { display: flex; align-items: center; gap: 6px; font-size: 13px;
+  color: #333; font-weight: 400; padding: 6px 0; cursor: pointer; }
+.vpb-checkline input { width: 15px; height: 15px; cursor: pointer; }
 #plots { display: flex; flex-wrap: wrap; gap: 12px; max-width: 1300px; margin: 0 auto; }
 #plotEnergy, #plotCost { flex: 1 1 480px; height: 520px; min-width: 360px; }
 """
