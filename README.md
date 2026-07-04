@@ -359,7 +359,7 @@ controls along the top:
   leave it on **All values** to plot every combination as its own
   colour-coded series;
 - a **"show cost per electronic step"** tick box: selecting it adds the
-  **Cost** panel (mean wall time per electronic step, s) alongside the energy
+  **Cost** panel (mean wall time per electronic step, s) beneath the energy
   panel; it is hidden by default.
 
 Find where the energy stops changing as the x-axis parameter increases, then

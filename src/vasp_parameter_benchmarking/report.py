@@ -339,8 +339,8 @@ function redraw() {
   });
   const opts = { responsive: true, displaylogo: false };
 
-  // The cost panel only exists while its tick box is selected; hide it first
-  // so the energy panel is sized to the remaining width before drawing.
+  // The cost panel sits beneath the energy panel and only exists while its
+  // tick box is selected.
   const showCost = document.getElementById("showCost").checked;
   const costDiv = document.getElementById("plotCost");
   costDiv.style.display = showCost ? "" : "none";
@@ -372,8 +372,8 @@ h1 { font-size: 20px; font-weight: 600; text-align: center; margin: 0 0 18px; }
 .vpb-checkline { display: flex; align-items: center; gap: 6px; font-size: 13px;
   color: #333; font-weight: 400; padding: 6px 0; cursor: pointer; }
 .vpb-checkline input { width: 15px; height: 15px; cursor: pointer; }
-#plots { display: flex; flex-wrap: wrap; gap: 12px; max-width: 1300px; margin: 0 auto; }
-#plotEnergy, #plotCost { flex: 1 1 480px; height: 520px; min-width: 360px; }
+#plots { display: flex; flex-direction: column; gap: 16px; max-width: 1100px; margin: 0 auto; }
+#plotEnergy, #plotCost { width: 100%; height: 520px; }
 """
 
 
