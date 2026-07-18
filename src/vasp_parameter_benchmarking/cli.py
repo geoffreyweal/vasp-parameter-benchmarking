@@ -16,6 +16,71 @@ import argparse
 import sys
 
 from . import __version__
+from .options_file import DEFAULT_OPTIONS_FILE, load_setup_options
+
+
+def _parse_bool(value: str) -> bool:
+    """Parse a boolean from an options file (true/false, yes/no, on/off, 1/0)."""
+    lowered = value.strip().lower()
+    if lowered in ("true", "yes", "on", "1"):
+        return True
+    if lowered in ("false", "no", "off", "0"):
+        return False
+    raise ValueError("expected a boolean (true/false)")
+
+
+def _validate_mode(value: str) -> str:
+    """Check a mode from an options file against the --mode choices."""
+    if value not in ("grid", "oat"):
+        raise ValueError("use 'grid' or 'oat'")
+    return value
+
+
+# setup options that can also be supplied via the options file, as
+# (argparse dest / file key with underscores, setup() keyword) pairs. Keep in
+# sync with the setup subparser and options_file.KNOWN_OPTIONS. A dest listed in
+# _SETUP_OPTION_CONVERTERS has its raw file value passed through that converter
+# (command-line values are already typed by argparse); the rest are used as-is.
+_SETUP_OPTIONS = (
+    ("incar", "incar_flags"),
+    ("parameters", "parameters_file"),
+    ("mode", "mode"),
+    ("vasp_files", "vasp_files"),
+    ("submit", "submit"),
+    ("root", "root"),
+    ("name_jobs", "name_jobs"),
+)
+_SETUP_OPTION_CONVERTERS = {
+    "mode": _validate_mode,
+    "name_jobs": _parse_bool,
+}
+
+
+def _merge_setup_options(args, file_opts, source):
+    """Merge command-line args over options-file values into ``setup()`` kwargs.
+
+    Precedence is command-line flag > options file > ``setup()``'s own default,
+    the last achieved by omitting any option that was given in neither place.
+    """
+    kwargs = {}
+    for dest, kwarg in _SETUP_OPTIONS:
+        cli_val = getattr(args, dest)
+        if cli_val is not None:
+            kwargs[kwarg] = cli_val
+        elif dest in file_opts:
+            raw = file_opts[dest]
+            converter = _SETUP_OPTION_CONVERTERS.get(dest)
+            if converter is None:
+                kwargs[kwarg] = raw
+            else:
+                try:
+                    kwargs[kwarg] = converter(raw)
+                except ValueError as exc:
+                    flag = dest.replace("_", "-")
+                    raise ValueError(
+                        f"{source}: invalid value for '{flag}': {raw!r} ({exc})"
+                    ) from None
+    return kwargs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,7 +96,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ---- setup -----------------------------------------------------------
+    # Every setup option below defaults to None (rather than its real default) so
+    # that _merge_setup_options can tell "given on the command line" from "left to
+    # the options file / built-in default". The real defaults live in setup()'s
+    # signature and are noted in the help text here.
     p_setup = sub.add_parser("setup", help="Part 1: create benchmarking files.")
+    p_setup.add_argument(
+        "--options",
+        help="Read setup options from this key=value file. If omitted, "
+        f"'{DEFAULT_OPTIONS_FILE}' in the working directory is used automatically "
+        "when present. Command-line flags override values from the file. (The "
+        "sweep itself still lives in the parameters file.)",
+    )
     p_setup.add_argument(
         "--incar",
         action="append",
@@ -54,24 +130,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="grid = every combination of values (Cartesian product); "
         "oat = one-at-a-time from a baseline (the first value of each). "
-        "Overrides 'mode' in the parameters file; defaults to grid.",
+        "Overrides 'mode' in the options and parameters files; defaults to grid.",
     )
-    p_setup.add_argument("--vasp-files", default="VASP_Files", help="Directory of VASP inputs.")
+    p_setup.add_argument(
+        "--vasp-files", help="Directory of VASP inputs (default: VASP_Files)."
+    )
     p_setup.add_argument(
         "--submit",
         help="Submit script copied unchanged into every config "
         "(default: <vasp-files>/submit.sl).",
     )
     p_setup.add_argument(
-        "--root", default="VASP_Parameter_Benchmarking", help="Output root directory."
+        "--root",
+        help="Output root directory (default: VASP_Parameter_Benchmarking).",
     )
     p_setup.add_argument(
         "--no-name-jobs",
         dest="name_jobs",
         action="store_false",
+        default=None,
         help="Keep submit.sl's own --job-name. By default each job is named "
         "vasp-para-bench-<folder> (e.g. vasp-para-bench-001) so jobs are "
-        "identifiable in squeue/sacct (the scheduler still assigns the job ID).",
+        "identifiable in squeue/sacct (the scheduler still assigns the job ID). "
+        "In the options file this is the boolean 'name-jobs' key.",
     )
 
     # ---- submit ----------------------------------------------------------
@@ -173,15 +254,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup":
             from .generate import setup
 
-            setup(
-                incar_flags=args.incar,
-                parameters_file=args.parameters,
-                mode=args.mode,
-                vasp_files=args.vasp_files,
-                submit=args.submit,
-                root=args.root,
-                name_jobs=args.name_jobs,
-            )
+            # Pull any options.txt (auto-loaded, or the file named with --options)
+            # and merge, with command-line flags taking precedence.
+            file_opts, source = load_setup_options(args.options)
+            kwargs = _merge_setup_options(args, file_opts, source)
+            if source is not None and file_opts:
+                loaded = ", ".join(k.replace("_", "-") for k in sorted(file_opts))
+                print(f"Loaded setup options from {source}: {loaded}")
+
+            setup(**kwargs)
         elif args.command == "submit":
             from .submit import submit
 
