@@ -3,7 +3,6 @@
 What this tool compares is *convergence vs cost*, so it pulls out:
 
   * the final total energy ``energy(sigma->0)`` (the convergence target);
-  * the number of ions ``NIONS`` (to report energy per atom);
   * the peak force on any ion in the last ionic step (an optional accuracy check);
   * per-electronic-step wall times from ``LOOP:`` lines (the cost metric).
 
@@ -19,9 +18,6 @@ from pathlib import Path
 # "  energy  without entropy=     -23.456  energy(sigma->0) =     -23.460"
 _SIGMA0_RE = re.compile(r"energy\(sigma->0\)\s*=\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)")
 
-# "   NIONS =       8"
-_NIONS_RE = re.compile(r"NIONS\s*=\s*(\d+)")
-
 # "      LOOP:  cpu time     10.7003: real time     10.7910"  (not "LOOP+:")
 _LOOP_RE = re.compile(
     r"^\s*LOOP:\s+cpu time\s+([\d.]+)\s*:\s*real time\s+([\d.]+)", re.MULTILINE
@@ -36,13 +32,6 @@ def final_energy(path: str | Path) -> float | None:
     text = Path(path).read_text(errors="replace")
     matches = _SIGMA0_RE.findall(text)
     return float(matches[-1]) if matches else None
-
-
-def n_ions(path: str | Path) -> int | None:
-    """Return ``NIONS`` from an OUTCAR, or None if absent."""
-    text = Path(path).read_text(errors="replace")
-    m = _NIONS_RE.search(text)
-    return int(m.group(1)) if m else None
 
 
 def parse_loop_times(path: str | Path) -> list[float]:

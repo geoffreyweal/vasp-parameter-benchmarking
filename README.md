@@ -268,7 +268,7 @@ vasp-parameter-benchmarking report --skip-steps 10 # drop the first 10 warm-up s
 For every usable run this collects:
 
 - Final energy — `energy(sigma->0)` from the OUTCAR (falling back to `E0` from
-  OSZICAR), plus energy per atom.
+  OSZICAR).
 - Peak force — the largest force on any ion in the last `TOTAL-FORCE` block, as
   an optional accuracy check.
 - Cost — mean and std-dev of the per-electronic-step `LOOP: … real time`, after

@@ -3,7 +3,7 @@
 For every config directory under ``--root`` with a usable OUTCAR this records:
 
   * the swept parameter values (from ``parameters.json``);
-  * the final energy ``energy(sigma->0)`` and energy per atom;
+  * the final energy ``energy(sigma->0)``;
   * the peak force on any ion (an optional accuracy check);
   * the mean & std-dev per-electronic-step wall time (cost), with the first
     ``--skip-steps`` warm-up steps dropped;
@@ -35,7 +35,6 @@ from . import sacct
 from .outcar import (
     final_energy,
     max_force,
-    n_ions,
     oszicar_final_e0,
     parse_loop_times,
 )
@@ -85,7 +84,6 @@ def collect_run(
     if energy is None:
         return None
 
-    nions = n_ions(outcar) if outcar.is_file() else None
     fmax = max_force(outcar) if outcar.is_file() else None
 
     loops = parse_loop_times(outcar) if outcar.is_file() else []
@@ -96,8 +94,6 @@ def collect_run(
     row: dict = {
         "config": run_dir.name,
         "energy_eV": energy,
-        "n_atoms": nions,
-        "energy_per_atom_eV": (energy / nions) if nions else None,
         "max_force_eV_per_A": fmax,
         "n_electronic_steps": len(loops),
         "loop_real_mean_s": loop_mean,
