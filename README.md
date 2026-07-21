@@ -271,10 +271,18 @@ For every usable run this collects:
   OSZICAR), plus energy per atom.
 - Peak force — the largest force on any ion in the last `TOTAL-FORCE` block, as
   an optional accuracy check.
-- Cost — mean and std-dev of the per-electronic-step `LOOP: … real time`, with
-  the first few warm-up steps dropped (`--skip-steps`, default 5).
+- Cost — mean and std-dev of the per-electronic-step `LOOP: … real time`, after
+  dropping the leading warm-up steps (see `--skip-steps` below).
 - SLURM utilisation — elapsed time and peak memory via `sacct --json` (left blank
   with `--no-sacct`).
+
+`--skip-steps` controls the cost figure. VASP writes the wall time of each
+electronic (SCF) step to the OUTCAR, and the cost is the average of those
+per-step times. The first few steps are usually slower than the rest because of
+one-off start-up work, so `--skip-steps` drops that many leading steps before
+averaging (default 5), giving a number closer to the steady-state cost per step.
+If a run is too short to have any steps left after the drop, its cost is left
+blank, but its energy is still kept.
 
 Outputs go to `report/` (change with `--out`):
 
