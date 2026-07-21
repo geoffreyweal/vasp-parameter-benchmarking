@@ -50,10 +50,9 @@ vasp-parameter-benchmarking clean
 
 ## Part 1 — `setup`: generate the benchmark directories
 
-> Don't want to type `setup`'s flags each time? Put them in an `options.txt`
-> file instead (see [Options file (`options.txt`)](#options-file-optionstxt)).
+There are two files/folders you need to give, `VASP_Files` and `vasp_parameter_benchmarking_parameters.txt`
 
-### The inputs — `VASP_Files/`
+### `VASP_Files/` - Input files
 
 Provide a directory of ordinary VASP inputs (default `VASP_Files/`, or point at
 it with `--vasp-files`):
@@ -70,14 +69,7 @@ VASP_Files/
 └── ...        # any extras (ML_FF, WAVECAR, CHGCAR, …) are copied too
 ```
 
-Every file is copied into each job directory unchanged. `setup` then edits only
-what defines that combination: it sets the swept `INCAR` tags and copies the
-assigned `KPOINTS_<n>` in as `KPOINTS`. Your base `INCAR` stays an ordinary
-single-value file. The sweep is described separately.
-
-> `POTCAR` files are distributed under the VASP licence, so provide your own.
-
-### The sweep — `vasp_parameter_benchmarking_parameters.txt`
+### `vasp_parameter_benchmarking_parameters.txt` - What VASP parameters you want to test
 
 INCAR tags are swept with a plain-text parameters file (default
 `vasp_parameter_benchmarking_parameters.txt`, or pass `--parameters`):
@@ -100,28 +92,6 @@ mem_per_cpu from ENCUT = 2G, 4G, 6G, 8G, 8G
 - `mode = grid | oat` controls how combinations are expanded (see below). A CLI
   `--mode` overrides it.
 - `mem_per_cpu from <KEY> = m1, m2, ...` is a memory table (see below).
-
-INCAR sweeps can also be given on the command line with
-`--incar "ENCUT=400,500,600"` (repeatable). CLI flags and the file are merged,
-and the CLI wins for a repeated tag.
-
-KPOINTS is swept with files, not lines: put `KPOINTS_1`, `KPOINTS_2`, … in
-`VASP_Files/` and `setup` sweeps over them automatically. A single plain
-`KPOINTS` means k-points are not swept. Because you write the files yourself, any
-KPOINTS format works: automatic meshes, Monkhorst-Pack, line mode, explicit
-lists. Each config gets its assigned file verbatim, except that the first line
-(VASP's free comment line, which VASP ignores) is tagged with the label, e.g.
-`KPOINTS_2 (your original comment)`, so the report and navigator can tell which
-variation each folder holds.
-
-> **Put your most-trusted value first.** The first value of each parameter, and
-> `KPOINTS_1`, is the baseline. In `oat` mode it is the centre the other
-> parameters vary around, and listing the value already in your base `INCAR`
-> first keeps later additive runs lined up.
->
-> **To benchmark `KSPACING`**, sweep it as an INCAR tag
-> (`INCAR KSPACING = 0.1, 0.2, 0.3`) and omit all KPOINTS files from
-> `VASP_Files/`. VASP uses `KSPACING` only when no `KPOINTS` file is present.
 
 ### `mode`: how combinations are expanded
 
