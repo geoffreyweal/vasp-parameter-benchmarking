@@ -151,8 +151,9 @@ Alongside the numbered folders, `setup` writes two files into the root:
 ### Extending a study later
 
 `setup` is additive and idempotent: edit the parameters file (or add
-`KPOINTS_<n>` files) and run it again. 
-```
+`KPOINTS_<n>` files) and run it again. `vasp-parameter-benchmarking` will create 
+numbered folders that span the newly added parameters. 
+
 
 ## Part 2 — `submit`: send the jobs to SLURM
 
@@ -168,13 +169,9 @@ only submits what needs running:
 - pending configs are submitted;
 - failed configs (died without an identifiable error) are reset to their inputs
   and resubmitted;
-- run, running, and error configs are skipped. Completed work is never re-run,
-  running jobs are never touched, and errored configs are never blindly
-  resubmitted (fix the cause, then `reset`; see below).
+- run, running, and error configs are skipped. 
 
-So re-running `submit` is always safe: a fresh tree submits everything, a
-finished tree submits nothing. Jobs are `sbatch`ed with a short pause every 10
-submissions to respect scheduler rate limits.
+> Jobs are `sbatch`ed with a short pause every 10 submissions to respect scheduler rate limits.
 
 Before anything is launched, the plan is shown and confirmed, so nothing is
 submitted by accident:
@@ -191,17 +188,12 @@ Submit these 4 job(s) to SLURM? [y=submit / N=abort / o=only these... / r=reject
 
 At the prompt, `o` asks for folder numbers to submit only, and `r` asks for
 folder numbers to reject; the plan is re-shown after each edit and you confirm
-again. Numbers may be comma- or space-separated, and `3` and `003` both work. The
-same narrowing is available as flags:
+again. Thesame narrowing is available as flags:
 
 ```bash
 vasp-parameter-benchmarking submit --submit-only 3,4   # only these folders
 vasp-parameter-benchmarking submit --reject 5,6        # all but these
 ```
-
-Both are repeatable. Neither `--submit-only` nor `o` can override the status
-rules: asking for a completed, running, or errored folder prints a note and skips
-it, so a double submission cannot be forced.
 
 ### Recovering from errors — `reset`
 
