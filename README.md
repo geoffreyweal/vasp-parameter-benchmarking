@@ -132,12 +132,13 @@ are what define it, and those are what every later command reads back.
 
 Alongside the numbered folders, `setup` writes two files into the root:
 
-- `folder_index.html` is the folder navigator. Open it in a browser to see every
-  combination, filter by parameter value, and check each folder's status (see
-  [Watching progress](#watching-progress--status-and-the-folder-navigator)).
-- `vasp_parameter_benchmarking_parameters.txt` is a record of the sweep you set
-  up (mode, tags, order, and memory table). `status`, `report`, and `reset` read
-  it back, so you don't have to describe the sweep again.
+- `folder_index.html` is the folder navigator. Open it in a browser to look up
+  which folder number holds which parameter values, and to check each folder's
+  status (see [Watching progress](#watching-progress--status-and-the-folder-navigator)).
+- `vasp_parameter_benchmarking_parameters.txt` lists the VASP parameters and
+  values you are testing, along with the mode and any memory table. You do not
+  need to touch this file; the program writes it and reads it back itself later,
+  mainly when it builds the report.
 
 Two `#SBATCH` directives are set in each copied `submit.sl` (everything else is
 exactly yours):
@@ -170,9 +171,10 @@ run from, `setup` picks it up automatically; point at a differently named file
 with `--options path/to/file`. Command-line flags always override the file, so
 you can keep a base `options.txt` and tweak a single run with a flag.
 
-> This file holds `setup`'s command-line options. The sweep itself, meaning which
-> INCAR tags to vary and the memory table, still lives in the parameters file
-> ([`vasp_parameter_benchmarking_parameters.txt`](#the-sweep--vasp_parameter_benchmarking_parameterstxt)),
+> This file holds `setup`'s command-line options. The parameters being tested,
+> meaning which INCAR tags to vary and the memory table, still live in the
+> parameters file
+> ([`vasp_parameter_benchmarking_parameters.txt`](#vasp_parameter_benchmarking_parameterstxt---what-vasp-parameters-you-want-to-test)),
 > exactly as described above.
 
 Write one `key = value` per line, using the long option name without the leading
