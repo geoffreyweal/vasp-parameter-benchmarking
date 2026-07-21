@@ -246,7 +246,7 @@ work with or without the scheduler:
   be identified (e.g. killed without leaving a message).
 - **— pending** — no sign the run has been launched yet.
 
-### The page is a snapshot — refresh it with `status`
+### The `VASP_Parameter_Benchmarking/folder_index.html` page is a snapshot — refresh it with `status`
 
 Pressing refresh in the browser does nothing on its own: a page opened from disk
 (`file://`) is not allowed to re-scan your folders, so the statuses are frozen at
