@@ -156,52 +156,6 @@ add 'INCAR SIGMA = 0.05, 0.1, 0.2' and run setup again:
 Then `submit` runs only the new folders, because it skips everything that has
 already run.
 
-### Options file (`options.txt`)
-
-Instead of passing `setup`'s options on the command line, you can write them into
-a plain-text `options.txt`. If an `options.txt` is present in the directory you
-run from, `setup` picks it up automatically; point at a differently named file
-with `--options path/to/file`. Command-line flags always override the file, so
-you can keep a base `options.txt` and tweak a single run with a flag.
-
-> This file holds `setup`'s command-line options. The parameters being tested,
-> meaning which INCAR tags to vary and the memory table, still live in the
-> parameters file
-> ([`vasp_parameter_benchmarking_parameters.txt`](#vasp_parameter_benchmarking_parameterstxt---what-vasp-parameters-you-want-to-test)),
-> exactly as described above.
-
-Write one `key = value` per line, using the long option name without the leading
-`--` (e.g. `vasp-files`). Blank lines and lines starting with `#` are ignored,
-`-` and `_` are interchangeable in keys, and quotes around a value are optional:
-
-```text
-# options.txt — VASP parameter-benchmarking setup
-mode       = oat
-vasp-files = VASP_Files
-root       = VASP_Parameter_Benchmarking
-name-jobs  = true
-```
-
-Then run:
-
-```bash
-vasp-parameter-benchmarking setup                    # auto-loads ./options.txt
-vasp-parameter-benchmarking setup --options my.txt   # use a differently named file
-vasp-parameter-benchmarking setup --mode grid        # override just --mode; file supplies the rest
-```
-
-Every `setup` option is accepted: `parameters`, `mode`, `vasp-files`, `submit`,
-`root`, plus two with a twist:
-
-- `name-jobs = true | false` is the boolean behind the `--no-name-jobs` flag
-  (`name-jobs = false` is the same as passing `--no-name-jobs`).
-- `incar = TAG=v1,v2,...` may be repeated, one line per tag, mirroring the
-  repeatable `--incar` flag (though the parameters file is usually the better
-  home for the sweep).
-
-An unknown key, a missing value, or a duplicated key is reported with its line
-number, so typos are caught before any files are written.
-
 ## Part 2 — `submit`: send the jobs to SLURM
 
 ```bash
