@@ -140,13 +140,6 @@ Alongside the numbered folders, `setup` writes two files into the root:
   need to touch this file; the program writes it and reads it back itself later,
   mainly when it builds the report.
 
-Two `#SBATCH` directives are set in each copied `submit.sl` (everything else is
-exactly yours):
-
-- `--job-name=vasp-para-bench-<folder>` (e.g. `vasp-para-bench-001`) so jobs are
-  identifiable in `squeue`/`sacct`. Opt out with `--no-name-jobs`.
-- `--mem-per-cpu=<value>`, only if you gave a `mem_per_cpu` table.
-
 ### Extending a study later
 
 `setup` is additive and idempotent: edit the parameters file (or add
