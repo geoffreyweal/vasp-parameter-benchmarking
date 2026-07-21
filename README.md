@@ -1,19 +1,10 @@
 # vasp-parameter-benchmarking
 
-A command-line tool for a practical VASP question: how high do your calculation
-parameters actually need to be? Give it your VASP inputs and the values you want
-to test (ENCUT, SIGMA, k-point density, and so on). It builds one job directory
-per combination, submits them to SLURM, tracks which have finished, are running,
-or errored, and collects the results into an interactive convergence-vs-cost
-report. You can then pick the cheapest settings that still converge.
+This tool is designed to allow you to determine what the minimum value you can set for VASP parameters (like ENCUT, SIGMA, k-point density, and so on) that gives you enough accuracy to perform your calculations while minimising the computational time required to run your jobs. 
 
 > **Sibling tool.** [`vasp-core-benchmarking`](https://github.com/geoffreyweal/vasp-core-benchmarking)
 > benchmarks the parallel layout (MPI ranks × OpenMP threads) by rewriting
-> `submit.sl`. This tool does the reverse: it varies only the calculation
-> parameters and leaves your `submit.sl` alone. The only `#SBATCH` directives it
-> ever sets are `--job-name` (so jobs show up clearly in `squeue`) and,
-> optionally, `--mem-per-cpu` (so heavier configs can ask for more memory).
-> Everything else about how your jobs run stays as you wrote it.
+> `submit.sl`. 
 
 ## Install
 
