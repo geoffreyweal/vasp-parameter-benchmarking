@@ -199,8 +199,7 @@ vasp-parameter-benchmarking submit --reject 5,6        # all but these
 
 Errored configs (e.g. `TIMEOUT`, out-of-memory, a VASP abort) are deliberately
 not resubmitted by `submit`, since rerunning them unchanged would usually hit the
-same wall. Fix the cause first (raise the `mem_per_cpu` table, extend the time
-limit, or correct the input), then:
+same wall. Fix the cause first, then run the following:
 
 ```bash
 vasp-parameter-benchmarking reset --dry-run   # list errored configs + reasons
@@ -211,11 +210,6 @@ vasp-parameter-benchmarking submit            # relaunch them (now pending)
 `reset` deletes everything in each errored config except its inputs (`INCAR`,
 `KPOINTS`, `POTCAR`, `POSCAR`, `submit.sl`), returning it to pending, and
 refreshes the navigator. All other configs are untouched.
-
-It also re-applies each reset config's `--mem-per-cpu` from the current memory
-table. So the out-of-memory recovery is: raise the table in your parameters file,
-run `setup` (which records it without otherwise touching existing folders), then
-`reset` and `submit`. The relaunched job requests the new memory.
 
 ## Watching progress — `status` and the folder navigator
 
