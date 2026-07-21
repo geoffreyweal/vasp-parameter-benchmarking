@@ -116,6 +116,14 @@ mem_per_cpu from KPOINTS = 2G, 5G          # lines up with KPOINTS_1, KPOINTS_2
 Sizes are `2G`, `512M`, or a bare number in MB.  If several memories apply to 
 a benchmark test, the highest memory value is the one past to slurm.
 
+### Run `setup`
+
+When you are ready, running the following command in the terminal:
+
+```bash
+vasp-parameter-benchmarking setup
+```
+
 ### What `setup` produces
 
 Each combination gets a plain numbered directory:
@@ -124,7 +132,7 @@ Each combination gets a plain numbered directory:
 VASP_Parameter_Benchmarking/     # change with --root
 ├── 001/  002/  003/  ...        # one complete VASP job each
 ├── folder_index.html            # the folder navigator (see below)
-└── vasp_parameter_benchmarking_parameters.txt   # the recorded sweep
+└── vasp_parameter_benchmarking_parameters.txt   # the recorded parameters for vasp-parameter-benchmarking to use later
 ```
 
 The folder number is just a label. The `INCAR` and `KPOINTS` inside each folder
@@ -143,18 +151,8 @@ Alongside the numbered folders, `setup` writes two files into the root:
 ### Extending a study later
 
 `setup` is additive and idempotent: edit the parameters file (or add
-`KPOINTS_<n>` files) and run it again. It reuses every existing folder whose
-`INCAR`/`KPOINTS` match a needed combination and creates only the new ones, with
-the next free numbers. Existing folders are never renamed, touched, or re-run.
-
-```text
-Study 1 (ENCUT × KPOINTS, oat) → 001 … 006
-add 'INCAR SIGMA = 0.05, 0.1, 0.2' and run setup again:
-  → reuses 001–006, creates only 007 (SIGMA=0.1) and 008 (SIGMA=0.2)
+`KPOINTS_<n>` files) and run it again. 
 ```
-
-Then `submit` runs only the new folders, because it skips everything that has
-already run.
 
 ## Part 2 — `submit`: send the jobs to SLURM
 
