@@ -103,7 +103,7 @@ mem_per_cpu from ENCUT = 2G, 4G, 6G, 8G, 8G
 
 ### The memory table — `mem_per_cpu`
 
-Heavier configs (higher `ENCUT`, denser k-points) can need more memory. A
+Heavier configs (higher `ENCUT`, denser k-points) may need more memory. A
 `mem_per_cpu` line gives one `--mem-per-cpu` value per value of a driving
 parameter, matched by position:
 
@@ -113,11 +113,8 @@ mem_per_cpu from ENCUT   = 2G, 4G, 6G, 8G, 8G
 mem_per_cpu from KPOINTS = 2G, 5G          # lines up with KPOINTS_1, KPOINTS_2
 ```
 
-Sizes are `2G`, `512M`, or a bare number in MB. The table is not a sweep axis, so
-it creates no extra folders. `setup` writes the chosen value into each config's
-`#SBATCH --mem-per-cpu` directive (adding one if your `submit.sl` has none), so
-each folder is self-contained. When several tables apply to a config, the
-greatest value wins.
+Sizes are `2G`, `512M`, or a bare number in MB.  If several memories apply to 
+a benchmark test, the highest memory value is the one past to slurm.
 
 ### What `setup` produces
 
