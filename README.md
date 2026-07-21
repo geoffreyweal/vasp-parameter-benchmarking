@@ -248,22 +248,14 @@ work with or without the scheduler:
 
 ### The `VASP_Parameter_Benchmarking/folder_index.html` page is a snapshot — refresh it with `status`
 
-Pressing refresh in the browser does nothing on its own: a page opened from disk
-(`file://`) is not allowed to re-scan your folders, so the statuses are frozen at
-the moment the file was written (a *"Status as of …"* timestamp on the page shows
-how old it is). To bring it up to date, regenerate the file, then refresh the
-tab:
+Pressing refresh in the browser does nothing on its own. To bring it up to date, 
+regenerate the file, then refresh the tab:
 
 ```bash
 vasp-parameter-benchmarking status
 # Rewrote VASP_Parameter_Benchmarking/folder_index.html (15 folder(s): 9 run, 2 running, 1 error, 0 failed, 3 pending).
 # Refresh the page in your browser to see the updated statuses.
 ```
-
-`status` is quick: it only re-scans and rewrites the navigator (no CSV or plots).
-`report` also refreshes it while collecting results. Pass `--no-sacct` to skip
-scheduler queries; running is then inferred from recent output-file activity
-alone.
 
 ## Part 3 — `report`: compare convergence vs cost
 
