@@ -127,11 +127,17 @@ VASP_Parameter_Benchmarking/     # change with --root
 └── vasp_parameter_benchmarking_parameters.txt   # the recorded sweep
 ```
 
-The number is just a label. The `INCAR`/`KPOINTS` inside each folder define what
-it is, and that is what every later command reads back. There is no hidden
-manifest. `setup` records the effective sweep (mode, tags, order, memory table)
-in the root's parameters file, so `report`, `status`, and `reset` know the sweep
-without you re-passing it.
+The folder number is just a label. The `INCAR` and `KPOINTS` inside each folder
+are what define it, and those are what every later command reads back.
+
+Alongside the numbered folders, `setup` writes two files into the root:
+
+- `folder_index.html` is the folder navigator. Open it in a browser to see every
+  combination, filter by parameter value, and check each folder's status (see
+  [Watching progress](#watching-progress--status-and-the-folder-navigator)).
+- `vasp_parameter_benchmarking_parameters.txt` is a record of the sweep you set
+  up (mode, tags, order, and memory table). `status`, `report`, and `reset` read
+  it back, so you don't have to describe the sweep again.
 
 Two `#SBATCH` directives are set in each copied `submit.sl` (everything else is
 exactly yours):
